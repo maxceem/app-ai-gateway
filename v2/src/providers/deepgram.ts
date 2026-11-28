@@ -25,8 +25,8 @@
  *   a request naming one is served, billed at the model's rate as an
  *   estimate, and logged. So is a priced option on a customer's own rate
  *   without it. Deepgram's own dollar figure per request
- *   (`GET v1/projects/{p}/requests/{id}`) is read later, with the relay
- *   (plan section 4.2, before step 10).
+ *   (`GET v1/projects/{p}/requests/{id}`) is not read: a key without access
+ *   to Deepgram's billing gets none, and the minutes already match (10a).
  * - Diarization is included in the prerecorded rate.
  * - Live streaming (`wss://.../v1/listen`) is a session, built with the relay.
  */
@@ -121,8 +121,8 @@ export const deepgram = defineProvider({
     // Live streaming over WebSocket (10a): a relayed session on a streaming slot. Billed at the larger of
     // the relay's clock from the first audio and the audio Deepgram reports it heard
     // (`relay/src/adapters.js`), at the streaming rates (`priceList`), with the request's language and
-    // add-ons as price keys. Deepgram's own dollar figure for the stream corrects it after the end
-    // (`../relay/deepgram-lookup.ts`).
+    // add-ons as price keys. It settles on those minutes when it ends, with no lookup afterwards: they
+    // matched Deepgram's own exactly in a real run.
     defineOperation({
       name: "deepgram.listen_stream",
       match: { method: "GET", path: "v1/listen" },
@@ -148,7 +148,7 @@ export const deepgram = defineProvider({
       },
       // A credential in its query (`token`, `access_token`) is never sent: `credentialField` in `../relay/start-session.ts`.
       meter: { kind: "wall_clock" },
-      session: { slot: "streaming", mode: "relayed", lookup: "deepgram", queryOptions: true },
+      session: { slot: "streaming", mode: "relayed", queryOptions: true },
     }),
   ],
 });

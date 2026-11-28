@@ -247,10 +247,10 @@ describe("the mock's streaming voice stand-ins (step 10a)", () => {
     return { response, socket, got, arrived };
   }
 
-  it("answers Deepgram's stream with a request id, a Results frame for each audio frame, and Metadata at CloseStream; its record carries the stream's mock_usd", async () => {
-    const { response, socket, got, arrived } = await open("https://mock.test/v1/listen?model=nova-3&mock_usd=0.0042");
+  it("answers Deepgram's stream with a request id, a Results frame for each audio frame, and Metadata at CloseStream", async () => {
+    const { response, socket, got, arrived } = await open("https://mock.test/v1/listen?model=nova-3");
     const requestId = response.headers.get("dg-request-id")!;
-    expect(requestId).toMatch(/^mock_usd_0\.0042_/u);
+    expect(requestId).toMatch(/^mock_/u);
     socket.send(new Uint8Array(32_000).buffer);
     socket.send(new Uint8Array(16_000).buffer);
     socket.send(JSON.stringify({ type: "KeepAlive" }));
@@ -261,13 +261,6 @@ describe("the mock's streaming voice stand-ins (step 10a)", () => {
       expect.objectContaining({ type: "Results", start: 1, duration: 0.5 }),
       expect.objectContaining({ type: "Metadata", request_id: requestId, duration: 1.5, channels: 1 }),
     ]);
-    const projects = await mock.fetch(new Request("https://mock.test/v1/projects", { headers: { authorization: "Token mock-key" } }));
-    expect(await projects.json()).toEqual({ projects: [{ project_id: "mock-project", name: "Mock" }] });
-    const record = await mock.fetch(new Request(`https://mock.test/v1/projects/mock-project/requests/${requestId}`, { headers: { authorization: "Token mock-key" } }));
-    // Deepgram's real shape: `response` at the top level, not wrapped in `request`.
-    const body = await record.json();
-    expect(body).toMatchObject({ request_id: requestId, response: { code: 101, completed: expect.any(String), details: { usd: 0.0042 } } });
-    expect(body).not.toHaveProperty("request");
   });
 
   it("answers ElevenLabs' stream with audio for each text, nothing for the opening space, and the final frame at the closing empty text", async () => {

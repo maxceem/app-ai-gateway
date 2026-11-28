@@ -24,7 +24,6 @@ import type { OpenWorkKind } from "./labels.ts";
 import { settleSession } from "./sessions.ts";
 import { KEY_COPIES_FIELD, KEY_COPIES_REMOVED } from "./write.ts";
 import { checkJob } from "../jobs/jobs.ts";
-import { deepgramLookup } from "../relay/deepgram-lookup.ts";
 import { elevenlabsLookup } from "../relay/elevenlabs-agent.ts";
 
 
@@ -80,14 +79,13 @@ const DONE: HandlerResult = { done: true };
 const retry = (reason: string): HandlerResult => ({ done: false, reason });
 
 /**
- * Provider cost lookups, by provider type (Deepgram's request record,
- * ElevenLabs' conversation record). Each provider's step adds its entry.
+ * Provider cost lookups, by provider type (ElevenLabs' conversation record).
+ * Each provider's step adds its entry. A Deepgram stream has none: it is
+ * billed by its minutes, which match Deepgram's own (a real run, 10a).
  * Work for a provider with no entry waits. Job checks need no table: one
  * handler reads every provider's jobs from its description (`../jobs/jobs.ts`).
  */
 export const PROVIDER_LOOKUPS: Record<string, OpenWorkHandler> = {
-  // Deepgram's request record after a stream (10a).
-  deepgram: (env, item, context) => deepgramLookup(env, item, context),
   // ElevenLabs' conversation record after an agent call (11a).
   elevenlabs: (env, item, context) => elevenlabsLookup(env, item, context),
 };

@@ -88,7 +88,7 @@ export type ChargeStatus = (typeof CHARGE_STATUSES)[number];
 
 /** The kinds of open work the sweep handles. */
 export const OPEN_WORK_KINDS = [
-  /** A provider cost lookup that returns real dollars (Deepgram, ElevenLabs agents). */
+  /** A provider cost lookup that returns real dollars (ElevenLabs agents). */
   "provider_lookup",
   /** An `unresolved` charge waiting for a price. */
   "unresolved",

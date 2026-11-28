@@ -1,9 +1,9 @@
 /**
  * A provider's own record of a session, read after it ends (plan 4.2, "a session-level total"): the sweep
  * settles the session to the provider's dollar figure, minus every slice already booked (`settleSession`).
- * One set of rules for every provider that has one: Deepgram's request record (10a, `./deepgram-lookup.ts`)
- * and ElevenLabs' conversation record (11a, `./elevenlabs-agent.ts`). Each provider says only how its
- * record is read (`ReadFigure`); everything else is here.
+ * One set of rules for every provider that has one, today ElevenLabs' conversation record (11a,
+ * `./elevenlabs-agent.ts`). Each provider says only how its record is read (`ReadFigure`); everything else
+ * is here.
  *
  * - Only a final record settles. One not there yet, or not final, is tried again, at the sweep's own pace
  *   (a minute, then doubling).
@@ -43,12 +43,12 @@ export type ProviderGet = (path: string) => Promise<{ readonly status: number; r
 /**
  * What a provider's record says: its dollar figure once final (whatever its sign: it is judged here);
  * `retry` while it isn't, with why; `keep` when no figure will come (the estimate stays), with the log
- * line that says why. That line is a `warn`, unless `level` says it is a normal outcome (`info`).
+ * line that says why.
  */
 export type Figure =
   | { readonly kind: "final"; readonly usd: number }
   | { readonly kind: "retry"; readonly reason: string }
-  | { readonly kind: "keep"; readonly message: string; readonly facts?: Readonly<Record<string, unknown>>; readonly level?: "info" };
+  | { readonly kind: "keep"; readonly message: string; readonly facts?: Readonly<Record<string, unknown>> };
 
 /** How one provider reads its record, by the session's provider call id. */
 export type ReadFigure = (get: ProviderGet, callId: string) => Promise<Figure>;
@@ -77,8 +77,8 @@ export function sessionLookup(providerType: string, readFigure: ReadFigure): Ope
     if (session.state !== "ended" || session.ended_at === null) return retry("session not ended");
     const facts = { app: session.app_id, session: sessionId };
     /** No figure will come: the slices' estimate stays, and the session says so. */
-    const keepEstimate = async (message: string, more: Readonly<Record<string, unknown>> = {}, level: "info" | "warn" = "warn"): Promise<HandlerResult> => {
-      log(level, message, { ...facts, ...more });
+    const keepEstimate = async (message: string, more: Readonly<Record<string, unknown>> = {}): Promise<HandlerResult> => {
+      log("warn", message, { ...facts, ...more });
       await settleSession(ledger, { sessionId, now, lastTry: true });
       return DONE;
     };
@@ -130,7 +130,7 @@ export function sessionLookup(providerType: string, readFigure: ReadFigure): Ope
       return retry("lookup failed");
     }
     if (figure.kind === "retry") return retry(figure.reason);
-    if (figure.kind === "keep") return keepEstimate(figure.message, figure.facts, figure.level);
+    if (figure.kind === "keep") return keepEstimate(figure.message, figure.facts);
     // A free (or negative) session is not trusted: the estimate stays, whatever was booked so far, since a late
     // or unpriced slice can make that $0 too (Sol round 3, Gemini Neon round 1, #273).
     if (!Number.isFinite(figure.usd) || figure.usd <= 0) return keepEstimate("session_lookup_figure_doubtful");

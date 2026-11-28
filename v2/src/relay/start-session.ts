@@ -205,7 +205,7 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
       const credentials = sealedCredentials(connection, identity.keyShare);
       // The values the session's price depends on, read from its options once: its slices are priced with them.
       const priceKeys = priceKeyValues(operation, { body: {}, query: options });
-      // A provider whose own dollar figure settles the session after it ends (Deepgram's request record).
+      // A provider whose own dollar figure settles the session after it ends (an ElevenLabs agent's conversation record).
       const lookup = operation.session.lookup;
 
       // The end user's id for a provider that takes one (an ElevenLabs agent's `user_id`), worked out before any slot is taken.

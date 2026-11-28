@@ -1,12 +1,10 @@
 /**
  * ElevenLabs' and Deepgram's streaming voice on the gateway's side (step 10a): their session operations and
  * prices, one price rule over every write path (the save check, the session's price, the pricing sweep), the
- * session start (the app's options sent on, the model locked, Deepgram's price keys and key copies), and
- * Deepgram's request lookup after a stream: a final record settles the session to Deepgram's dollars, one not
- * ready yet is tried again, and past an hour, or when it can't be read, the estimate stays.
+ * session start (the app's options sent on, the model locked, Deepgram's price keys), and a Deepgram stream
+ * after it ends: it settles on its own minutes, with no lookup of Deepgram's record.
  *
- * Runs with split keys off and on (`vitest.config.ts`): with them on, the lookup opens the key with the copies
- * made when the app asked for the session.
+ * Runs with split keys off and on (`vitest.config.ts`).
  */
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
@@ -15,18 +13,14 @@ import worker from "../src/index.ts";
 import { parseTicket } from "../relay/src/ticket.js";
 import { adapterFor, closeForRelay } from "../src/relay/contract.ts";
 import { checkpointForRelay, priceSlice, sliceCharge } from "../src/relay/checkpoint.ts";
-import { deepgramLookup, recordFigure } from "../src/relay/deepgram-lookup.ts";
 import { billing, billingForCharge, priceSources, savedPriceProblem } from "../src/pricing/billability.ts";
 import { priceKeyValues } from "../src/proxy/request-fields.ts";
 import { credentialField } from "../src/relay/start-session.ts";
-import { GatewayError } from "../src/core/errors.ts";
-import { setVaultForTests, type VaultClient } from "../src/vault/client.ts";
-import { localVault } from "./local-vault.ts";
 import { listPrice } from "../src/pricing/prices.ts";
 import { deepgram } from "../src/providers/deepgram.ts";
 import { elevenlabs } from "../src/providers/elevenlabs.ts";
-import { attachLookupKeyCopies, lookupWorkId, openSession, PROVIDER_LOOKUP_WINDOW_MS, sessionWorkId, type SessionRow } from "../src/ledger/sessions.ts";
-import { runSweep, type OpenWorkItem } from "../src/ledger/sweep.ts";
+import { attachLookupKeyCopies, lookupWorkId, openSession, type SessionRow } from "../src/ledger/sessions.ts";
+import { runSweep } from "../src/ledger/sweep.ts";
 import { sessionBillsTime } from "../src/relay/session-price.ts";
 import { sealForTest, splitKeysOn } from "./split-keys.ts";
 import { ACCOUNT_ID, clearCaches, ledger, seedAccount, seedAppKey, seedRoutedApp } from "./helpers.ts";
@@ -170,7 +164,7 @@ describe(`streaming voice prices and the save rule (step 10a, split keys ${split
 });
 
 // ---------------------------------------------------------------------------
-// Starting a stream, and Deepgram's lookup after it.
+// Starting a stream, and a Deepgram stream after it ends.
 
 async function seedConnection(type: string): Promise<{ id: string; slug: string }> {
   await seedAccount();
@@ -254,28 +248,21 @@ describe(`starting a stream (step 10a, split keys ${splitKeysOn ? "on" : "off"})
     expect((await start(openai.appId, openai.slug, openai.key, { path: "v1/realtime?model=gpt-realtime-2.1", model: "gpt-realtime-2.1" })).status).toBe(403);
   });
 
-  it("starts a Deepgram stream with its options, without webhooks or a client's token, its price keys signed, and its lookup queued", async () => {
+  it("starts a Deepgram stream with its options, without webhooks or a client's token, its price keys signed, and no lookup after it", async () => {
     const { appId, slug, key } = await setup("deepgram", "deepgram.listen_stream");
     const path = "v1/listen?model=nova-2&encoding=linear16&sample_rate=16000&language=multi&diarize=true&keyterm=Acme&callback=https%3A%2F%2Fevil.test&token=theirs&api_key=theirs&access_token=theirs";
     const response = await start(appId, slug, key, { path, model: "nova-3" });
     expect(response.status).toBe(201);
     const body = (await response.json()) as { ticket: string; session_id: string };
     const { payload } = parseTicket(body.ticket)!;
-    expect(payload).toMatchObject({ operation: "deepgram.listen_stream", model: "nova-3", slot: "streaming", sessionTotal: true });
+    expect(payload).toMatchObject({ operation: "deepgram.listen_stream", model: "nova-3", slot: "streaming", sessionTotal: false });
     expect(payload.url).toBe("https://api.deepgram.com/v1/listen?model=nova-3&encoding=linear16&sample_rate=16000&language=multi&diarize=true&keyterm=Acme");
     expect(payload.priceKeys).toEqual({ language: "multi", redact: "false", detect_entities: "false", keyterm: "true", diarize: "true" });
     expect(adapterFor(payload)).toBe("deepgram");
-    // The session expects Deepgram's total, and its lookup waits for the end, with the key's copies when split keys are on.
+    // The session settles on its own minutes: it expects no total from Deepgram, and no lookup row is queued.
     const session = await ledger().prepare("SELECT expects_session_total FROM session WHERE id = ?").bind(body.session_id).first<{ expects_session_total: number }>();
-    expect(session?.expects_session_total).toBe(1);
-    const row = await lookupRow(body.session_id);
-    expect(row).toMatchObject({ kind: "provider_lookup", tries: 0 });
-    const detail = JSON.parse(row!.detail_json) as Record<string, unknown>;
-    // At the sweep's own pace: no pace of its own (Fable, #273 round 1).
-    expect(detail).toEqual(expect.objectContaining({ providerType: "deepgram" }));
-    expect(detail).not.toHaveProperty("retryEveryMs");
-    if (splitKeysOn) expect(detail.keyCopies).toMatchObject({ providerKey: { blob: expect.any(String) } });
-    else expect(detail.keyCopies).toBeUndefined();
+    expect(session?.expects_session_total).toBe(0);
+    expect(await lookupRow(body.session_id)).toBeNull();
     // With no model named, the gateway's default, Nova-3: the guide's own example starts (Sol, #273 round 4).
     const unnamed = await start(appId, slug, key, { path: "v1/listen?encoding=linear16&sample_rate=16000" });
     expect(unnamed.status).toBe(201);
@@ -315,63 +302,6 @@ async function closedStream(sliceMs = 30_000, requestId: string | null = "dg-req
   return { sessionId, appId, connectionId, endedAt };
 }
 
-type Answer = { status: number; body?: unknown };
-
-/** Deepgram's API as the lookup sees it, through the vault: each path's answer, and what was asked. */
-function deepgramApi(record: () => Answer, projects: () => Answer = () => ({ status: 200, body: { projects: [{ project_id: "proj-1", name: "p" }] } })) {
-  const asked: { url: string; authorization: string | null }[] = [];
-  vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const request = new Request(input, init);
-    asked.push({ url: request.url, authorization: request.headers.get("authorization") });
-    const path = new URL(request.url).pathname;
-    const answer = path === "/v1/projects" ? projects() : path.startsWith("/v1/projects/proj-1/requests/") ? record() : { status: 500 };
-    return answer.body === undefined ? new Response(null, { status: answer.status }) : Response.json(answer.body, { status: answer.status });
-  });
-  return asked;
-}
-
-/**
- * Deepgram's real record of a completed stream, as a `member` key reads it: `response` at the top level, and
- * no `usd` (a real run, research T38: `deepgram-record.sanitized.json`, its ids replaced).
- */
-const realRecord = () => ({
-  request_id: "dg-req-1",
-  project_uuid: "proj-1",
-  created: "2026-11-28T01:38:21.627126Z",
-  path: "/v1/listen?encoding=linear16&sample_rate=16000&channels=1&punctuate=true&interim_results=false&model=nova-3",
-  api_key_id: "key-1",
-  response: {
-    details: {
-      duration: 24.093,
-      total_audio: 24.093,
-      channels: 1,
-      streams: 1,
-      tier: "nova-3",
-      metadata: {},
-      models: ["model-1"],
-      method: "streaming",
-      tags: [],
-      features: ["endpointing", "punctuate"],
-      config: {},
-    } as Record<string, unknown>,
-    token_details: [],
-    code: 101,
-    completed: "2026-11-28T01:38:44.129769Z",
-    deployment: "hosted:us",
-  } as Record<string, unknown>,
-  callback: null,
-});
-
-/** The real record with a dollar figure, as a key that may read Deepgram's billing may see it. */
-function recordWithUsd(usd: number) {
-  const record = realRecord();
-  record.response.details = { ...(record.response.details as object), usd };
-  return record;
-}
-
-/** A completed request record with its dollar figure. */
-const finalRecord = (usd: number): Answer => ({ status: 200, body: recordWithUsd(usd) });
-
 async function settlementOf(sessionId: string) {
   return ledger().prepare("SELECT settlement, session_total_nano FROM session WHERE id = ?").bind(sessionId).first<{ settlement: string; session_total_nano: number | null }>();
 }
@@ -381,108 +311,34 @@ async function sessionCost(sessionId: string): Promise<number> {
   return row?.cost ?? 0;
 }
 
-describe(`Deepgram's request lookup after a stream (step 10a, split keys ${splitKeysOn ? "on" : "off"})`, () => {
-  it("reads a completed record, at the top level or wrapped in `request`: its dollar figure, or that it has none", () => {
-    // The real record, as Deepgram sent it: complete, without a dollar figure.
-    expect(recordFigure(realRecord())).toEqual({ kind: "no_figure" });
-    expect(recordFigure(recordWithUsd(0.0024))).toEqual({ kind: "final", usd: 0.0024 });
-    // The shape one of Deepgram's reference pages shows, wrapped in `request`.
-    expect(recordFigure({ request: recordWithUsd(0.0024) })).toEqual({ kind: "final", usd: 0.0024 });
-    expect(recordFigure({ request: realRecord() })).toEqual({ kind: "no_figure" });
-    // A negative figure is a completed one: the caller keeps the estimate for it (Sol, #273 round 4).
-    expect(recordFigure(recordWithUsd(-1))).toEqual({ kind: "final", usd: -1 });
-    // Not completed yet, with a figure or without.
-    const notDone = recordWithUsd(0.0024);
-    delete notDone.response.completed;
-    expect(recordFigure(notDone)).toEqual({ kind: "pending" });
-    expect(recordFigure({ ...realRecord(), response: { ...realRecord().response, completed: "" } })).toEqual({ kind: "pending" });
-    expect(recordFigure({ request_id: "dg-req-1" })).toEqual({ kind: "pending" });
-    expect(recordFigure(null)).toEqual({ kind: "pending" });
-  });
-
-  it("keeps the estimate at once on a completed record without a dollar figure, logged at info, not warn", async () => {
-    const lines: { level: string; line: string }[] = [];
-    for (const method of ["log", "warn", "error"] as const) vi.spyOn(console, method).mockImplementation((line: unknown) => void lines.push({ level: method, line: String(line) }));
+describe(`a Deepgram stream after it ends (step 10a, split keys ${splitKeysOn ? "on" : "off"})`, () => {
+  it("settles on its own minutes at the first sweep after close: no lookup, no call to Deepgram, no warning", async () => {
+    const warnings: string[] = [];
+    vi.spyOn(console, "warn").mockImplementation((line: unknown) => void warnings.push(String(line)));
     const { sessionId, endedAt } = await closedStream();
-    const asked = deepgramApi(() => ({ status: 200, body: realRecord() }));
-    await runSweep(env, ledger(), { now: endedAt + 31_000 });
-    expect(await settlementOf(sessionId)).toEqual({ settlement: "estimate_kept", session_total_nano: null });
-    // The slice stays as booked: 30 s at $0.0048 a minute.
-    expect(await sessionCost(sessionId)).toBe(2_400_000);
-    // One read, and no retry.
-    expect(asked.map((one) => one.url)).toEqual(["https://api.deepgram.com/v1/projects", "https://api.deepgram.com/v1/projects/proj-1/requests/dg-req-1"]);
     expect(await lookupRow(sessionId)).toBeNull();
-    const lookupLines = lines.filter((one) => one.line.includes("session_lookup_"));
-    expect(lookupLines).toEqual([{ level: "log", line: expect.stringContaining("session_lookup_no_figure") }]);
-  });
-
-  it("is moved to the stream's end by close, and settles the session to Deepgram's dollars, minus the slice already booked", async () => {
-    const { sessionId, endedAt } = await closedStream();
-    // The slice: 30 s at $0.0048 a minute.
-    expect(await sessionCost(sessionId)).toBe(2_400_000);
-    expect((await lookupRow(sessionId))?.due_at).toBeLessThanOrEqual(endedAt + 30_000);
-    const asked = deepgramApi(() => finalRecord(0.0031));
+    const fetched: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      fetched.push(new Request(input, init).url);
+      return new Response(null, { status: 500 });
+    });
     await runSweep(env, ledger(), { now: endedAt + 31_000 });
-    expect(await settlementOf(sessionId)).toEqual({ settlement: "settled", session_total_nano: 3_100_000 });
-    expect(await sessionCost(sessionId)).toBe(3_100_000);
-    // The record was asked for by the stream's request id, in the key's own project, with the key the vault added.
-    expect(asked.map((one) => one.url)).toEqual(["https://api.deepgram.com/v1/projects", "https://api.deepgram.com/v1/projects/proj-1/requests/dg-req-1"]);
-    expect(asked.every((one) => one.authorization === `Token ${SECRET}`)).toBe(true);
-    // Both rows are done; a repeat run changes nothing.
-    expect(await lookupRow(sessionId)).toBeNull();
-    expect(await ledger().prepare("SELECT COUNT(*) AS n FROM open_work WHERE id = ?").bind(sessionWorkId(sessionId)).first("n")).toBe(0);
-    await runSweep(env, ledger(), { now: endedAt + 3 * 60_000 });
-    expect(await sessionCost(sessionId)).toBe(3_100_000);
-  });
-
-  it("tries a record that isn't ready again, a minute later and then doubling, until it is complete (pending)", async () => {
-    const { sessionId, endedAt } = await closedStream();
-    let answer: Answer = { status: 404, body: { err_code: "NOT_FOUND" } };
-    deepgramApi(() => answer);
-    await runSweep(env, ledger(), { now: endedAt + 31_000 });
-    expect(await lookupRow(sessionId)).toMatchObject({ tries: 1, last_error: "record not ready", due_at: endedAt + 31_000 + 60_000 });
-    // There, but not complete yet.
-    const notDone = recordWithUsd(0.003);
-    delete notDone.response.completed;
-    answer = { status: 200, body: notDone };
-    await runSweep(env, ledger(), { now: endedAt + 91_000 });
-    expect(await lookupRow(sessionId)).toMatchObject({ tries: 2, last_error: "record not complete", due_at: endedAt + 91_000 + 120_000 });
-    expect(await settlementOf(sessionId)).toMatchObject({ settlement: "open", session_total_nano: null });
-    answer = finalRecord(0.0029);
-    await runSweep(env, ledger(), { now: endedAt + 211_000 });
-    expect(await settlementOf(sessionId)).toEqual({ settlement: "settled", session_total_nano: 2_900_000 });
-    expect(await sessionCost(sessionId)).toBe(2_900_000);
-  });
-
-  it("keeps the estimate once an hour has passed since the stream ended (expired), and asks Deepgram nothing", async () => {
-    const { sessionId, endedAt } = await closedStream();
-    const asked = deepgramApi(() => ({ status: 404 }));
-    await runSweep(env, ledger(), { now: endedAt + PROVIDER_LOOKUP_WINDOW_MS + 1_000 });
-    expect(asked).toEqual([]);
-    expect(await settlementOf(sessionId)).toEqual({ settlement: "estimate_kept", session_total_nano: null });
+    expect(await settlementOf(sessionId)).toEqual({ settlement: "settled", session_total_nano: null });
+    // The slice as booked, 30 s at $0.0048 a minute, with no correction.
     expect(await sessionCost(sessionId)).toBe(2_400_000);
-    expect(await lookupRow(sessionId)).toBeNull();
+    expect(await ledger().prepare("SELECT COUNT(*) AS n FROM charge WHERE owner_id = ? AND kind = 'correction'").bind(sessionId).first("n")).toBe(0);
+    expect(fetched).toEqual([]);
+    expect(warnings.filter((line) => line.includes(sessionId))).toEqual([]);
   });
 
-  it("keeps the estimate at once when the key may not read usage (401 or 403, on the record or the projects), or the stream has no request id (Fable, #273 round 1)", async () => {
-    const refused = await closedStream();
-    deepgramApi(() => ({ status: 403, body: { err_code: "INSUFFICIENT_PERMISSIONS" } }));
-    await runSweep(env, ledger(), { now: refused.endedAt + 31_000 });
-    expect(await settlementOf(refused.sessionId)).toMatchObject({ settlement: "estimate_kept" });
-    expect(await lookupRow(refused.sessionId)).toBeNull();
-
-    const noProjects = await closedStream();
-    deepgramApi(() => finalRecord(0.01), () => ({ status: 401 }));
-    await runSweep(env, ledger(), { now: noProjects.endedAt + 31_000 });
-    expect(await settlementOf(noProjects.sessionId)).toMatchObject({ settlement: "estimate_kept" });
-
-    const unnamed = await closedStream(30_000, null);
-    const asked = deepgramApi(() => finalRecord(0.01));
-    await runSweep(env, ledger(), { now: unnamed.endedAt + 31_000 });
-    expect(asked).toEqual([]);
-    expect(await settlementOf(unnamed.sessionId)).toMatchObject({ settlement: "estimate_kept" });
+  it("prices the keyterm add-on on a slice once Deepgram confirmed keyterms mid-stream (Sol, #273 round 3)", async () => {
+    const { sessionId } = await closedStream(30_000, "dg-req-1", { keyterms: true });
+    // 30 s at $0.0048 a minute plus the keyterm add-on, $0.0013.
+    expect(await sessionCost(sessionId)).toBe(3_050_000);
   });
+});
 
+describe(`a provider lookup row's key copies (split keys ${splitKeysOn ? "on" : "off"})`, () => {
   it("puts the key's copies on the lookup row whichever write made it, once, and never on one that gave up (a first checkpoint sooner than the row)", async () => {
     const session: SessionRow = {
       id: `ses_${crypto.randomUUID().replaceAll("-", "")}`,
@@ -492,16 +348,16 @@ describe(`Deepgram's request lookup after a stream (step 10a, split keys ${split
       installId: null,
       appleAccountId: null,
       appKeyId: null,
-      providerType: "deepgram",
+      providerType: "elevenlabs",
       providerConnectionId: null,
-      operation: "deepgram.listen_stream",
-      model: "nova-3",
+      operation: "elevenlabs.agent",
+      model: "agent_copies",
       mode: "relayed",
-      slot: "streaming",
+      slot: "conversational",
       timeCapMs: 30 * 60_000,
       startedAt: Date.now(),
       expectsSessionTotal: true,
-      lookup: "deepgram",
+      lookup: "elevenlabs",
     };
     // Not written yet: nothing takes them.
     expect(await attachLookupKeyCopies(ledger(), session.id, { providerKey: { blob: "b1", identity: [] } })).toBe(false);
@@ -516,125 +372,5 @@ describe(`Deepgram's request lookup after a stream (step 10a, split keys ${split
     await openSession(ledger(), other, Date.now());
     await ledger().prepare("UPDATE open_work SET gave_up_at = 1 WHERE id = ?").bind(lookupWorkId(other.id)).run();
     expect(await attachLookupKeyCopies(ledger(), other.id, "missing")).toBe(false);
-  });
-
-  it("tries again after a projects answer that can't be read, and settles once it can (Sol, #273 round 2)", async () => {
-    const { sessionId, endedAt } = await closedStream();
-    let projects: Answer = { status: 200, body: { projects: "cut" } };
-    deepgramApi(() => finalRecord(0.0027), () => projects);
-    await runSweep(env, ledger(), { now: endedAt + 31_000 });
-    expect(await lookupRow(sessionId)).toMatchObject({ tries: 1, last_error: "no project in the answer" });
-    projects = { status: 200, body: { projects: [{ project_id: "proj-1" }] } };
-    await runSweep(env, ledger(), { now: endedAt + 91_000 });
-    expect(await settlementOf(sessionId)).toEqual({ settlement: "settled", session_total_nano: 2_700_000 });
-  });
-
-  it("prices the keyterm add-on on a slice once Deepgram confirmed keyterms mid-stream (Sol, #273 round 3)", async () => {
-    const { sessionId } = await closedStream(30_000, "dg-req-1", { keyterms: true });
-    // 30 s at $0.0048 a minute plus the keyterm add-on, $0.0013.
-    expect(await sessionCost(sessionId)).toBe(3_050_000);
-  });
-
-  it("keeps the estimate on a completed record of $0, whatever was booked so far: a late slice then counts in full (Sol round 3, Gemini Neon round 1, #273)", async () => {
-    const lines: string[] = [];
-    for (const method of ["log", "warn"] as const) vi.spyOn(console, method).mockImplementation((line: unknown) => void lines.push(String(line)));
-    // The stream is closed, and its only slice is still on its way: nothing booked yet.
-    const { appId, slug, key } = await setup("deepgram", "deepgram.listen_stream");
-    const response = await start(appId, slug, key, { path: "v1/listen?encoding=linear16", model: "nova-3" });
-    const { ticket, session_id: sessionId } = (await response.json()) as { ticket: string; session_id: string };
-    const { payload } = parseTicket(ticket)!;
-    const endedAt = payload.start + 31_000;
-    const ctx = createExecutionContext();
-    await closeForRelay(env, ticket, { finalSlice: 1, endReason: "provider_closed", endedAt, providerCallId: "dg-req-1" }, endedAt, (promise) => ctx.waitUntil(promise));
-    await waitOnExecutionContext(ctx);
-    deepgramApi(() => finalRecord(0));
-    await runSweep(env, ledger(), { now: endedAt + 31_000 });
-    expect(await settlementOf(sessionId)).toEqual({ settlement: "estimate_kept", session_total_nano: null });
-    expect(lines.some((line) => line.includes("session_lookup_figure_doubtful"))).toBe(true);
-    // The late slice arrives: never zeroed by a $0 total, it counts.
-    const late = createExecutionContext();
-    await checkpointForRelay(
-      env,
-      ticket,
-      { slice: { seq: 1, measures: {}, sessionMs: 30_000, billedMs: 30_000, gapMs: 0, gaps: 0, from: payload.start, to: payload.start + 30_000 }, connected: true, accounting: true, providerCallId: "dg-req-1" },
-      endedAt + 60_000,
-      (promise) => late.waitUntil(promise),
-    );
-    await waitOnExecutionContext(late);
-    expect(await sessionCost(sessionId)).toBe(2_400_000);
-  });
-
-  it("keeps the estimate on a completed record with a negative figure: never a refund (Sol, #273 round 4)", async () => {
-    const { sessionId, endedAt } = await closedStream();
-    deepgramApi(() => finalRecord(-0.002));
-    await runSweep(env, ledger(), { now: endedAt + 31_000 });
-    expect(await settlementOf(sessionId)).toEqual({ settlement: "estimate_kept", session_total_nano: null });
-    expect(await sessionCost(sessionId)).toBe(2_400_000);
-  });
-
-  it("keeps the estimate on a completed record of $0 when the slice is still unpriced, so the pricing sweep still prices it (Sol round 3, Gemini Neon round 1, #273)", async () => {
-    const { sessionId, endedAt } = await closedStream();
-    await ledger().prepare("UPDATE charge SET cost_nano = NULL, price_source = 'unresolved' WHERE owner_id = ?").bind(sessionId).run();
-    deepgramApi(() => finalRecord(0));
-    await runSweep(env, ledger(), { now: endedAt + 31_000 });
-    expect(await settlementOf(sessionId)).toEqual({ settlement: "estimate_kept", session_total_nano: null });
-    expect(await ledger().prepare("SELECT COUNT(*) AS n FROM charge WHERE owner_id = ? AND kind = 'correction'").bind(sessionId).first("n")).toBe(0);
-  });
-
-  it("never settles before the stream has ended: it waits for close", async () => {
-    const { sessionId } = await closedStream();
-    await ledger().prepare("UPDATE session SET state = 'active', ended_at = NULL WHERE id = ?").bind(sessionId).run();
-    const asked = deepgramApi(() => finalRecord(0.01));
-    const item = { id: lookupWorkId(sessionId), kind: "provider_lookup", accountId: ACCOUNT_ID, appId: "a", ownerType: "session", ownerId: sessionId, chargeId: null, detail: {}, dueAt: 0, tries: 0 } as OpenWorkItem;
-    expect(await deepgramLookup(env, item, { ledger: ledger(), now: Date.now(), lastTry: false })).toEqual({ done: false, reason: "session not ended" });
-    expect(asked).toEqual([]);
-  });
-
-  it.runIf(splitKeysOn)("keeps the estimate when the key's copies couldn't be made: nothing else can open the key", async () => {
-    const { sessionId, endedAt } = await closedStream();
-    await ledger().prepare("UPDATE open_work SET detail_json = json_set(detail_json, '$.keyCopies', 'missing') WHERE id = ?").bind(lookupWorkId(sessionId)).run();
-    const asked = deepgramApi(() => finalRecord(0.01));
-    await runSweep(env, ledger(), { now: endedAt + 31_000 });
-    expect(asked).toEqual([]);
-    expect(await settlementOf(sessionId)).toMatchObject({ settlement: "estimate_kept" });
-  });
-
-  it.runIf(splitKeysOn)("tries again when the row came without copies (written by a checkpoint) and the vault can't open the key, then keeps the estimate past the hour", async () => {
-    const { sessionId, endedAt } = await closedStream();
-    await ledger().prepare("UPDATE open_work SET detail_json = json_remove(detail_json, '$.keyCopies') WHERE id = ?").bind(lookupWorkId(sessionId)).run();
-    const asked = deepgramApi(() => finalRecord(0.01));
-    await runSweep(env, ledger(), { now: endedAt + 31_000 });
-    expect(asked).toEqual([]);
-    expect(await lookupRow(sessionId)).toMatchObject({ tries: 1, last_error: "lookup failed" });
-    await runSweep(env, ledger(), { now: endedAt + PROVIDER_LOOKUP_WINDOW_MS + 1_000 });
-    expect(await settlementOf(sessionId)).toMatchObject({ settlement: "estimate_kept" });
-  });
-
-  it("tries again after the vault fails once (a timeout, say), and settles on the next try (Sol, #273 round 1)", async () => {
-    const { sessionId, endedAt } = await closedStream();
-    deepgramApi(() => finalRecord(0.0033));
-    let failures = 1;
-    setVaultForTests((vaultEnv): VaultClient => {
-      const real = localVault(vaultEnv);
-      return {
-        ...real,
-        call: async (input) => {
-          if (failures > 0) {
-            failures -= 1;
-            throw new GatewayError(502, "provider_unavailable", "The provider credential could not be used");
-          }
-          return real.call(input);
-        },
-      };
-    });
-    try {
-      await runSweep(env, ledger(), { now: endedAt + 31_000 });
-      expect(await lookupRow(sessionId)).toMatchObject({ tries: 1, last_error: "lookup failed" });
-      expect(await settlementOf(sessionId)).toMatchObject({ settlement: "open" });
-      await runSweep(env, ledger(), { now: endedAt + 91_000 });
-      expect(await settlementOf(sessionId)).toEqual({ settlement: "settled", session_total_nano: 3_300_000 });
-    } finally {
-      setVaultForTests(localVault);
-    }
   });
 });

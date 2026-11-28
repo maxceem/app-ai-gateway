@@ -1107,8 +1107,8 @@ function deepgramHeard(data) {
  * - Billed, as xAI is, at the larger of the relay's clock, from the client's first audio frame to the close,
  *   and the audio Deepgram reports it heard, a running total (`deepgramHeard`). An end that cuts Deepgram's
  *   last report short still bills the clock, never less than Deepgram.
- * - Deepgram's own dollar figure for the stream corrects it after the end (the request lookup in the gateway's
- *   sweep), by the request id in its answer's `dg-request-id` header.
+ * - It settles on those minutes when it ends: the gateway reads no record from Deepgram afterwards. The
+ *   request id in Deepgram's `dg-request-id` header is kept as the session's provider call id.
  * - The client's binary frames are audio; its text frames (`KeepAlive`, `Finalize`, `CloseStream`) are not.
  * - Keyterms a `Configure` message turns on, once Deepgram confirms them (`ConfigureSuccess`), mark every
  *   later slice for the keyterm add-on (`keyterms` in the journal), which the gateway prices.

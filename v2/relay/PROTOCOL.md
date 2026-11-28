@@ -146,9 +146,8 @@ each channel billed).
 - Keyterms turned on mid-stream with `Configure` bill the keyterm add-on from
   the slice in which Deepgram confirms them (`ConfigureSuccess`) to the end.
 - The relay keeps the request id Deepgram sends when the stream opens
-  (`dg-request-id`). After the end, the gateway reads Deepgram's record of the
-  request and settles the session to Deepgram's own dollar figure, for up to an
-  hour; after that, or when the key can't read it, the estimate stays.
+  (`dg-request-id`). The session settles on its minutes when it ends: the
+  gateway does not read Deepgram's record of the request afterwards.
 
 ### ElevenLabs agents
 

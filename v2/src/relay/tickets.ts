@@ -215,7 +215,7 @@ export function sessionRowOf(ticket: Ticket): SessionRow {
     timeCapMs: ticket.cap,
     startedAt: ticket.start,
     expectsSessionTotal: ticket.sessionTotal,
-    // The provider whose record settles it, by its operation (Deepgram's stream, 10a): only with a total expected.
+    // The provider whose record settles it, by its operation (an ElevenLabs agent, 11a): only with a total expected.
     lookup: ticket.sessionTotal ? (declaredOperation(ticket.operation)?.session?.lookup ?? null) : null,
   };
 }

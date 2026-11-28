@@ -245,12 +245,8 @@ Start a new session then.
 - **Deepgram speech to text.** Send the audio as binary messages, and
   Deepgram's own `KeepAlive`, `Finalize` and `CloseStream`. The session is
   charged by the audio Deepgram reports it heard, or by the time since your
-  first audio when that is longer. A few minutes after the session ends, the
-  charge is corrected to Deepgram's own figure for the stream, when the
-  connection's key may read Deepgram's usage (its `usage:read` permission).
-  The exact dollar correction also needs a key that may read Deepgram's
-  billing. Otherwise the gateway's own charge stays, which matches the
-  minutes Deepgram reports.
+  first audio when that is longer. That is the final charge: it is not
+  corrected after the session ends.
 
 ## ElevenLabs agents
 
