@@ -818,7 +818,8 @@ async function readOffer(request) {
   const bytes = await readBody(request);
   if (bytes === null) return 413;
   const type = request.headers.get("content-type") ?? "";
-  if (!/^multipart\/form-data\s*;/iu.test(type)) return { sdp: new TextDecoder().decode(bytes), session: {} };
+  // The media type without its parameters: a form with no boundary is a form, which the parser refuses.
+  if ((type.split(";")[0] ?? "").trim().toLowerCase() !== "multipart/form-data") return { sdp: new TextDecoder().decode(bytes), session: {} };
   /** @type {FormData} */
   let form;
   try {

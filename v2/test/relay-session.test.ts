@@ -362,6 +362,14 @@ describe(`an observed session through the relay's session object (step 9a part 3
       expect(refused.status).toBe(400);
       expect(await refused.json()).toEqual({ error: { code: "offer_invalid" } });
     }
+    // A form whose type names no boundary is still a form: refused, never read as SDP (Sol, #277 round 1).
+    const unbounded = await relay().fetch(`https://relay.test${SESSION_PATH}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${ticket}`, "content-type": "multipart/form-data" },
+      body: "v=0\r\n",
+    });
+    expect(unbounded.status).toBe(400);
+    expect(await unbounded.json()).toEqual({ error: { code: "offer_invalid" } });
     // Nothing started: the same ticket still makes the call.
     expect((await send({ sdp: "v=0\r\na=x-mock-ends:0.5\r\n" })).status).toBe(201);
   });

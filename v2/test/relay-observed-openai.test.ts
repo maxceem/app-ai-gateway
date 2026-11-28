@@ -299,3 +299,64 @@ describe("the keepalive's shape (T9)", () => {
     expect(SIDE_KEEPALIVE_MS).toBe(60_000);
   });
 });
+
+describe("OpenAI's answers and transcriptions across a reattach or a settings change (Sol, #277 round 1)", () => {
+  const created = (id: string) => JSON.stringify({ type: "response.created", event_id: `event_c_${id}`, response: { id } });
+  const doneOf = (id: string) => JSON.stringify({ type: "response.done", event_id: `event_d_${id}`, response: { id, usage: { input_tokens: 50, output_tokens: 10 } } });
+  const updated = (model: string) => JSON.stringify({ type: "session.updated", event_id: "event_s", session: { type: "realtime", audio: { input: { transcription: { model } } } } });
+  const committed = (item: string) => JSON.stringify({ type: "input_audio_buffer.committed", event_id: `event_k_${item}`, item_id: item });
+  const completedFor = (item: string) =>
+    JSON.stringify({ type: "conversation.item.input_audio_transcription.completed", event_id: `event_t_${item}`, item_id: item, usage: { type: "tokens", input_tokens: 30, output_tokens: 4 } });
+  /** What the session object does with a frame: the meter sees it, then its usage is read and labelled. */
+  const through = (meter: NonNullable<ReturnType<NonNullable<typeof OPENAI.perCall>>>, data: string) => {
+    meter.see(data, true);
+    const read = OPENAI.read(data);
+    return read === null ? null : meter.label(read);
+  };
+
+  it("an answer that started before a reattach and finishes after a newer one started closes only itself, and is still billed", () => {
+    // The new side channel's meter never saw answer A start.
+    const meter = OPENAI.perCall!("gpt-realtime-2.1");
+    through(meter, created("resp_B"));
+    const billedA = through(meter, doneOf("resp_A"));
+    expect(billedA).toMatchObject({ id: "resp_A", measures: { input_tokens: 50, output_tokens: 10 } });
+    // B is still open: a stop now waits for it, and an end now would mark it cut.
+    expect(meter.unfinished()).toBe(true);
+    through(meter, doneOf("resp_B"));
+    expect(meter.unfinished()).toBe(false);
+  });
+
+  it("two answers open at once on a relayed call each close by their own id, in either order (#270 still holds)", () => {
+    const meter = OPENAI.perCall!("gpt-realtime-2.1");
+    through(meter, created("resp_1"));
+    through(meter, created("resp_2"));
+    through(meter, doneOf("resp_2"));
+    expect(meter.unfinished()).toBe(true);
+    through(meter, doneOf("resp_1"));
+    expect(meter.unfinished()).toBe(false);
+    // A repeated done for an answer already closed changes nothing.
+    through(meter, doneOf("resp_1"));
+    expect(meter.unfinished()).toBe(false);
+  });
+
+  it("an audio delta is never parsed: only its length counts toward the estimate while an answer is open", () => {
+    const meter = OPENAI.perCall!("gpt-realtime-2.1");
+    through(meter, created("resp_1"));
+    // Not JSON past its type: a parse would fail, a length read doesn't.
+    meter.see('{"type":"response.output_audio.delta","delta":"' + "A".repeat(3_200) + "<not json", true);
+    expect(meter.estimate()).toMatchObject({ measures: { output_tokens: 2, estimated_tokens: 2 } });
+  });
+
+  it("a transcription is billed at the model of the moment its item was committed, even if a session.update changed it before it completed", () => {
+    const meter = OPENAI.perCall!("gpt-realtime-2.1");
+    through(meter, updated("gpt-4o-mini-transcribe"));
+    through(meter, committed("item_1"));
+    through(meter, updated("gpt-4o-transcribe"));
+    through(meter, committed("item_2"));
+    expect(through(meter, completedFor("item_1"))).toMatchObject({ model: "gpt-4o-mini-transcribe" });
+    expect(through(meter, completedFor("item_2"))).toMatchObject({ model: "gpt-4o-transcribe" });
+    // An item the relay never saw committed (before a reattach): the session's model now.
+    expect(through(meter, completedFor("item_0"))).toMatchObject({ model: "gpt-4o-transcribe" });
+    expect(meter.unfinished()).toBe(false);
+  });
+});

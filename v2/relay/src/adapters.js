@@ -563,13 +563,19 @@ const OPENAI_OPEN_MAX = 64;
  * One OpenAI call's memory (`CallMeter`), from OpenAI's own events:
  * - its output audio format and its input transcription model
  *   (`session.created`, `session.updated`);
- * - how many answers are open, and the audio forwarded while any is, for an
- *   estimate if the session's own end cuts them. An out-of-band answer's audio
- *   counts too, and the estimate uses the session's format: a guess that may
- *   bill high, never low, marked an estimate;
- * - the committed audio items whose transcription is still to come, and each
- *   finished answer or transcription until its usage is written, which a
- *   closing session waits for.
+ * - which answers are open, by their `response.id`, and the audio forwarded
+ *   while any is, for an estimate if the session's own end cuts them. Only an
+ *   answer's own `response.done` closes it: an answer that started before an
+ *   observed call's side channel reattached never closes a newer one (Sol,
+ *   #277 round 1). A `response.done` whose start the relay missed is still
+ *   billed. An out-of-band answer's audio counts too, and the estimate uses the
+ *   session's format: a guess that may bill high, never low, marked an
+ *   estimate;
+ * - the committed audio items whose transcription is still to come, each with
+ *   the transcription model of the moment it was committed, which bills it even
+ *   if a `session.update` changes the model before it completes (Sol, #277
+ *   round 1); and each finished answer or transcription until its usage is
+ *   written, which a closing session waits for.
  * @param {string | null} model the session's locked model
  * @returns {CallMeter}
  */
@@ -580,11 +586,14 @@ function openAiCall(model) {
   let transcribedBy = null;
   /** @type {string | null} The model OpenAI last stated for the session. */
   let stated = null;
-  let open = 0;
+  /** @type {string[]} The open answers' `response.id`s ("" for one with none), oldest first. */
+  const open = [];
   let chars = 0;
   let finishedCount = 0;
-  /** @type {Set<string>} Committed audio items whose transcription is still to come. */
-  const pending = new Set();
+  /** @type {Map<string, string>} Committed audio items whose transcription is still to come, with its model then. */
+  const pending = new Map();
+  /** @type {Map<string, string>} A completed transcription's model, by its event id, until `label` books it. */
+  const completed = new Map();
   /** @type {Set<string>} Answers and transcriptions that finished, whose usage is still being written. */
   const writing = new Set();
   /** A finished answer or transcription: waited for until its usage is written (`settled`). @param {string} key */
@@ -598,6 +607,11 @@ function openAiCall(model) {
     const item = /** @type {{ item_id?: unknown } | null} */ (parsed(data))?.item_id;
     return typeof item === "string" ? item : "";
   };
+  /** The answer a `response.created` or `response.done` names, or "" when it names none. @param {string} data */
+  const answerOf = (data) => {
+    const id = /** @type {{ response?: { id?: unknown } } | null} */ (parsed(data))?.response?.id;
+    return typeof id === "string" ? id : "";
+  };
   return {
     see(data, forwarded) {
       if (typeof data !== "string") return null;
@@ -605,12 +619,14 @@ function openAiCall(model) {
       if (type === null) return null;
       if (OPENAI_AUDIO_DELTAS.has(type)) {
         // Only audio that reached the client, or waits for it, is estimated if an answer is cut.
-        if (forwarded && open > 0) chars += data.length;
+        if (forwarded && open.length > 0) chars += data.length;
       } else if (type === "response.created") {
-        open += 1;
+        if (open.length < OPENAI_OPEN_MAX) open.push(answerOf(data));
       } else if (type === "response.done") {
-        open = Math.max(0, open - 1);
-        if (open === 0) chars = 0;
+        // Only the answer it names: one this relay never saw start closes nothing, and is billed all the same.
+        const at = open.indexOf(answerOf(data));
+        if (at !== -1) open.splice(at, 1);
+        if (open.length === 0) chars = 0;
         finishedCount += 1;
         return finished(`answer:${finishedCount}`);
       } else if (type === "session.created" || type === "session.updated") {
@@ -622,11 +638,20 @@ function openAiCall(model) {
         if (named !== undefined) transcribedBy = named;
       } else if (type === "input_audio_buffer.committed") {
         const item = itemOf(data);
-        if (transcribedBy !== null && item !== "" && pending.size < OPENAI_OPEN_MAX) pending.add(item);
+        if (transcribedBy !== null && item !== "" && pending.size < OPENAI_OPEN_MAX) pending.set(item, transcribedBy);
       } else if (OPENAI_TRANSCRIPTION_ENDS.has(type)) {
-        // A transcription completed or failed, or its item was deleted: it is no longer waited for.
-        const item = itemOf(data);
-        if (pending.delete(item)) return finished(`item:${item}`);
+        // A transcription completed or failed, or its item was deleted: it is no longer waited for. A
+        // completion is billed at the model its item was committed under (`label`).
+        const frame = /** @type {{ event_id?: unknown, item_id?: unknown } | null} */ (parsed(data));
+        const item = typeof frame?.item_id === "string" ? frame.item_id : "";
+        const committedUnder = pending.get(item);
+        if (committedUnder === undefined) return null;
+        pending.delete(item);
+        if (type === "conversation.item.input_audio_transcription.completed" && typeof frame?.event_id === "string") {
+          if (completed.size >= OPENAI_OPEN_MAX) completed.delete(completed.keys().next().value ?? "");
+          completed.set(frame.event_id.slice(0, 128), committedUnder);
+        }
+        return finished(`item:${item}`);
       }
       return null;
     },
@@ -637,19 +662,23 @@ function openAiCall(model) {
       return model !== null && stated !== null && stated !== model ? stated : null;
     },
     pending() {
-      return open > 0 || pending.size > 0 || writing.size > 0;
+      return open.length > 0 || pending.size > 0 || writing.size > 0;
     },
     unfinished() {
-      return open > 0 || pending.size > 0;
+      return open.length > 0 || pending.size > 0;
     },
     label(event) {
       const transcription = Object.keys(event.measures).some((name) => name.startsWith("transcription_"));
-      return transcription ? { ...event, model: transcribedBy ?? "unknown" } : event;
+      if (!transcription) return event;
+      // The model its item was committed under; one the relay never saw committed, the session's model now.
+      const committedUnder = completed.get(event.id);
+      completed.delete(event.id);
+      return { ...event, model: committedUnder ?? transcribedBy ?? "unknown" };
     },
     estimate() {
-      if (open === 0) return null;
+      if (open.length === 0) return null;
       const tokens = Math.ceil(chars / OPENAI_CHARS_PER_TOKEN[format]);
-      open = 0;
+      open.length = 0;
       chars = 0;
       if (tokens === 0) return null;
       return { id: crypto.randomUUID(), measures: { output_tokens: tokens, output_split: 1, output_audio_tokens: tokens, estimated_tokens: tokens } };
