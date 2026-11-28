@@ -3,7 +3,7 @@ import Foundation
 
 /// The microphone and the speaker, as the voice client uses them. Tests use a fake.
 @MainActor
-protocol AgentAudio: AnyObject {
+protocol AgentAudio: AnyObject, Sendable {
     /// 100 ms chunks of the microphone, as 16-bit little-endian PCM at the input rate.
     var mic: AsyncStream<Data> { get }
     /// Seconds of agent audio queued and not played yet.
@@ -13,8 +13,8 @@ protocol AgentAudio: AnyObject {
     /// Called with the seconds of queued audio a rebuild of the audio engine
     /// threw away. The queue is already empty then.
     var onLostAudio: ((TimeInterval) -> Void)? { get set }
-    /// Silences the microphone before its samples are chunked, so no speech
-    /// captured while muted is sent.
+    /// Mutes the microphone at its source, so no speech captured while
+    /// muted is sent.
     var muted: Bool { get set }
     /// Starts the audio session and the engine. Does nothing when they run.
     func start() throws
@@ -41,11 +41,16 @@ final class AgentAudioEngine: AgentAudio {
     private let micOut: AsyncStream<Data>.Continuation
     var onDrained: (() -> Void)?
     var onLostAudio: ((TimeInterval) -> Void)?
+    /// Muted at the source, in voice processing: the microphone gives
+    /// silence. The resampler reads the flag too, to clear a partial chunk.
     var muted: Bool {
         get { mute.value }
-        set { mute.value = newValue }
+        set {
+            mute.value = newValue
+            // Not running: the engine's setup applies it.
+            if running { engine.inputNode.isVoiceProcessingInputMuted = newValue }
+        }
     }
-    /// Read by the audio thread.
     private let mute = MicMute()
 
     private var engine = AVAudioEngine()
@@ -77,7 +82,13 @@ final class AgentAudioEngine: AgentAudio {
         try? session.setPreferredIOBufferDuration(0.02)
         try session.setActive(true)
         #endif
-        try setUpEngine()
+        do {
+            try setUpEngine()
+        } catch {
+            // Let the audio session go again: other apps get their audio back.
+            tearDown()
+            throw error
+        }
         running = true
         observe()
     }
@@ -131,6 +142,10 @@ final class AgentAudioEngine: AgentAudio {
         queuedFrames = 0
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
         observers.removeAll()
+        tearDown()
+    }
+
+    private func tearDown() {
         engine.inputNode.removeTap(onBus: 0)
         player.stop()
         engine.stop()
@@ -160,6 +175,8 @@ final class AgentAudioEngine: AgentAudio {
         // Echo cancellation: with it, the agent never heard itself in T17a.
         // Turning it on changes the configuration, so only when it is off.
         if !engine.inputNode.isVoiceProcessingEnabled { try engine.inputNode.setVoiceProcessingEnabled(true) }
+        // Again on every rebuild: a fresh engine starts unmuted.
+        engine.inputNode.isVoiceProcessingInputMuted = mute.value
         if player.engine == nil { engine.attach(player) }
         engine.connect(player, to: engine.mainMixerNode, format: playFormat)
         try installTap()
@@ -293,17 +310,14 @@ final class MicResampler: @unchecked Sendable {
             return buffer
         }
         guard status != .error, let floats = converted.floatChannelData?[0] else { return }
-        // A partial chunk never mixes muted and unmuted audio.
+        // The source gives silence while muted. A partial chunk is cleared at
+        // each change, so it never mixes the two.
         let muted = mute.value
         if muted != self.muted {
             self.muted = muted
             samples.removeAll()
         }
-        if muted {
-            samples.append(contentsOf: repeatElement(0, count: Int(converted.frameLength)))
-        } else {
-            samples.append(contentsOf: UnsafeBufferPointer(start: floats, count: Int(converted.frameLength)))
-        }
+        samples.append(contentsOf: UnsafeBufferPointer(start: floats, count: Int(converted.frameLength)))
         while samples.count >= chunk {
             var data = Data(count: chunk * 2)
             data.withUnsafeMutableBytes { raw in

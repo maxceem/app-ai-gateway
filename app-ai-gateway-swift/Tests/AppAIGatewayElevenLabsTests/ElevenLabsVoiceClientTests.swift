@@ -278,8 +278,9 @@ struct ElevenLabsVoiceClientTests {
         }
         try await client?.start()
         #expect(client?.isActive == true)
+        #expect(audio.running)
         client = nil
-        #expect(await eventually { probe.closed && probe.freed })
+        #expect(await eventually { probe.closed && probe.freed && !audio.running })
     }
 
     @Test
@@ -463,17 +464,18 @@ struct MicResamplerTests {
     }
 
     @Test
-    func speechCapturedWhileMutedIsNeverSent() async throws {
+    func aPartialChunkIsClearedWhenMuteChanges() async throws {
         let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
         let (stream, out) = AsyncStream.makeStream(of: Data.self)
         let mute = MicMute()
         let resampler = try #require(MicResampler(from: format, to: format, out: out, mute: mute))
-        // Half a chunk of speech, then muted: the partial chunk is cleared, not finished with silence.
+        // Half a chunk of speech, then muted: the source gives silence, and the
+        // partial chunk is cleared, not finished with silence.
         resampler.take(Self.buffer(0.5, frames: 800))
         mute.value = true
-        resampler.take(Self.buffer(0.5, frames: 1600))
+        resampler.take(Self.buffer(0, frames: 1600))
         // Unmuted mid-chunk: the muted part is cleared too.
-        resampler.take(Self.buffer(0.5, frames: 800))
+        resampler.take(Self.buffer(0, frames: 800))
         mute.value = false
         resampler.take(Self.buffer(0.25, frames: 1600))
         out.finish()

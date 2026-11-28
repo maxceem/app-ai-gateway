@@ -314,9 +314,10 @@ import AppAIGateway
 import AppAIGatewayElevenLabs
 
 let voice = ElevenLabsVoiceClient(gateway: client, agentID: "agent_7201m7pd…")
-try await voice.start(dynamicVariables: ["user_name": "Ann"])
+let variables: [String: ElevenLabsVoiceClient.DynamicVariable] = ["user_name": "Ann"]
+try await voice.start(dynamicVariables: variables)
 
-for await event in voice.events {
+call: for await event in voice.events {
     switch event {
     case .userTranscript(let text), .agentResponse(let text):
         show(text)
@@ -324,8 +325,11 @@ for await event in voice.events {
         // A new conversation, with a short greeting and the earlier turns.
         try await voice.start(
             firstMessage: "Sorry, the line dropped.",
+            dynamicVariables: variables,
             context: ElevenLabsVoiceClient.contextualUpdate(for: voice.transcript)
         )
+    case .ended:
+        break call // ended on purpose: by the app, the agent or a limit
     default:
         break
     }
@@ -373,10 +377,15 @@ then sends silence, so ElevenLabs still sees the user's turn end.
 **Mind ElevenLabs' limit on calls at once.** Your ElevenLabs plan allows a
 number of calls at once, 6 on Starter. The limit is for the whole ElevenLabs
 workspace: every agent, and every app that uses the same workspace, shares
-it. Above it, what happens depends on the agent's burst pricing setting in
-ElevenLabs. With burst pricing on, ElevenLabs still serves the extra calls and
-charges their minutes at twice its usual rate. With it off, ElevenLabs refuses
-them. An app may open 10 voice sessions at once by default. You can lower
+it. Above it, what happens depends on the agent's settings in ElevenLabs:
+
+- With burst pricing on, ElevenLabs still serves extra calls, up to its own
+  limit for bursts, and charges their minutes at twice its usual rate.
+- Without burst pricing, or past the burst limit, ElevenLabs holds the extra
+  calls in a queue until a place is free, when call queueing is on (it is by
+  default), or refuses them.
+
+An app may open 10 voice sessions at once by default. You can lower
 that with `limits.per_app.sessions.conversational` in the app's
 [settings](/applications/limits). That caps only this app's share of the
 workspace's calls: calls from your other apps and agents still count toward

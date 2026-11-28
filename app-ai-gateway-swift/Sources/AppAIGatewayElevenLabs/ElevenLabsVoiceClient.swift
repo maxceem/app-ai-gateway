@@ -192,6 +192,9 @@ public final class ElevenLabsVoiceClient {
     deinit {
         outbox?.finish()
         if let session { Task { await session.close() } }
+        // The same teardown as `end()`: the audio session goes, and its observers.
+        let audio = audio
+        Task { @MainActor in audio.stop() }
         continuation.finish()
     }
 
