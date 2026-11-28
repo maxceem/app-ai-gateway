@@ -1,5 +1,4 @@
 import AppAIGateway
-@preconcurrency import AVFoundation
 import Foundation
 import Testing
 @testable import AppAIGatewayElevenLabs
@@ -76,7 +75,6 @@ final class FakeAudio: AgentAudio {
     let micIn: AsyncStream<Data>.Continuation
     var onDrained: (() -> Void)?
     var onLostAudio: ((TimeInterval) -> Void)?
-    var muted = false
     var running = false
     var starts = 0
     var rates: (input: Double, output: Double) = (16000, 16000)
@@ -119,6 +117,22 @@ final class FakeAudio: AgentAudio {
         queuedSeconds = 0
         if lost > 0 { onLostAudio?(lost) }
         onDrained?()
+    }
+}
+
+/// Holds a start until the test lets it go.
+@MainActor
+final class Gate {
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var isOpen = false
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiter = $0 }
+    }
+    func open() {
+        isOpen = true
+        waiter?.resume()
+        waiter = nil
     }
 }
 
@@ -387,13 +401,57 @@ struct ElevenLabsVoiceClientTests {
     }
 
     @Test
-    func aMutedMicrophoneSendsSilence() async throws {
+    func everyChunkThatOverlapsMutedTimeIsSentAsSilence() async throws {
         let session = try await started()
-        client.isMicrophoneMuted = true
-        #expect(audio.muted)
-        audio.micIn.yield(Data(repeating: 7, count: 3200))
+        let speech = #"{"user_audio_chunk":""# + Data(repeating: 7, count: 3200).base64EncodedString() + #""}"#
         let silence = #"{"user_audio_chunk":""# + Data(count: 3200).base64EncodedString() + #""}"#
-        #expect(await eventually { session.sent.last == silence })
+        /// Sends one chunk of speech, and answers how it went out.
+        func chunk() async -> String? {
+            let before = session.sent.count
+            audio.micIn.yield(Data(repeating: 7, count: 3200))
+            _ = await eventually { session.sent.count > before }
+            return session.sent.last
+        }
+        // Muted while the chunk was being built: all of it is silence.
+        client.isMicrophoneMuted = true
+        #expect(await chunk() == silence)
+        #expect(await chunk() == silence)
+        // Unmuted: the chunk being built started while muted, so it is silence too.
+        client.isMicrophoneMuted = false
+        #expect(await chunk() == silence)
+        #expect(await chunk() == speech)
+        // A mute and unmute between two chunks still silences the chunk it touched.
+        client.isMicrophoneMuted = true
+        client.isMicrophoneMuted = false
+        #expect(await chunk() == silence)
+        #expect(await chunk() == speech)
+    }
+
+    @Test
+    func aStartRightAfterEndIsNotIgnoredWhileTheFirstStartWaits() async throws {
+        let gate = Gate()
+        var sessions: [FakeSession] = []
+        let client = ElevenLabsVoiceClient(audio: audio) { _ in
+            let index = sessions.count
+            let session = FakeSession(id: "s\(index + 1)")
+            sessions.append(session)
+            // The first start waits for the gateway.
+            if index == 0 { await gate.wait() }
+            return session
+        }
+        let first = Task { try await client.start() }
+        #expect(await eventually { sessions.count == 1 })
+        client.end()
+        #expect(!client.isActive)
+        try await client.start()
+        #expect(sessions.count == 2)
+        #expect(client.isActive)
+        // The first start's session comes late: it is let go, and the new call stays on.
+        gate.open()
+        try await first.value
+        #expect(client.isActive)
+        #expect(!sessions[0].started)
+        #expect(sessions[1].started)
     }
 
     @Test
@@ -453,88 +511,14 @@ struct ElevenLabsVoiceClientTests {
     }
 }
 
-/// The real resampler, fed made-up microphone buffers.
-struct MicResamplerTests {
-    private static func buffer(_ value: Float, frames: Int) -> AVAudioPCMBuffer {
-        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
-        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames))!
-        buffer.frameLength = AVAudioFrameCount(frames)
-        for i in 0..<frames { buffer.floatChannelData![0][i] = value }
-        return buffer
-    }
-
-    @Test
-    func aPartialChunkIsClearedWhenMuteChanges() async throws {
-        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
-        let (stream, out) = AsyncStream.makeStream(of: Data.self)
-        let mute = MicMute()
-        let resampler = try #require(MicResampler(from: format, to: format, out: out, mute: mute))
-        // Half a chunk of speech, then muted: the source gives silence, and the
-        // partial chunk is cleared, not finished with silence.
-        resampler.take(Self.buffer(0.5, frames: 800))
-        mute.value = true
-        resampler.take(Self.buffer(0, frames: 1600))
-        // Unmuted mid-chunk: the muted part is cleared too.
-        resampler.take(Self.buffer(0, frames: 800))
-        mute.value = false
-        resampler.take(Self.buffer(0.25, frames: 1600))
-        out.finish()
-        var chunks: [[Int16]] = []
-        var iterator = stream.makeAsyncIterator()
-        while let data = await iterator.next() {
-            chunks.append(data.withUnsafeBytes { Array($0.bindMemory(to: Int16.self)).map { Int16(littleEndian: $0) } })
-        }
-        #expect(chunks.count == 2)
-        #expect(chunks[0].allSatisfy { $0 == 0 })
-        #expect(chunks[1].allSatisfy { $0 == Int16(0.25 * 32767) })
-    }
-
-    @Test
-    func aMuteAndUnmuteBetweenTwoBuffersClearsThePartialChunk() async throws {
-        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
-        let (stream, out) = AsyncStream.makeStream(of: Data.self)
-        let mute = MicMute()
-        let resampler = try #require(MicResampler(from: format, to: format, out: out, mute: mute))
-        resampler.take(Self.buffer(0.5, frames: 800))
-        // Muted and unmuted again before the next buffer: the speech before still goes.
-        mute.value = true
-        mute.value = false
-        resampler.take(Self.buffer(0.25, frames: 1600))
-        out.finish()
-        var chunks: [[Int16]] = []
-        for await data in stream {
-            chunks.append(data.withUnsafeBytes { Array($0.bindMemory(to: Int16.self)).map { Int16(littleEndian: $0) } })
-        }
-        #expect(chunks.count == 1)
-        #expect(chunks[0].allSatisfy { $0 == Int16(0.25 * 32767) })
-    }
-}
-
-/// iOS's one audio session, shared by every engine.
+/// The real engine, never started: no audio hardware is needed.
 @MainActor
-struct AudioSessionUsersTests {
+struct AgentAudioEngineTests {
     @Test
-    func aClientReleasedAfterANewOneStartedLeavesTheSessionOn() throws {
-        var activations = 0
-        var deactivations = 0
-        let users = AudioSessionUsers(activate: { activations += 1 }, deactivate: { deactivations += 1 })
-        try users.acquire() // the first call
-        try users.acquire() // a new call starts before the old client's teardown runs
-        users.release() // the old client's teardown
-        #expect(deactivations == 0)
-        #expect(activations == 2)
-        users.release() // the new call ends
-        #expect(deactivations == 1)
-        users.release() // a second release changes nothing
-        #expect(deactivations == 1)
-        #expect(users.count == 0)
-    }
-
-    @Test
-    func aSessionThatFailedToTurnOnIsNotCounted() {
-        let users = AudioSessionUsers(activate: { throw URLError(.unknown) }, deactivate: {})
-        #expect(throws: URLError.self) { try users.acquire() }
-        #expect(users.count == 0)
+    func aStoppedEngineDropsAgentAudioInsteadOfQueueingIt() {
+        // Also the case after a rebuild that failed: the queue would never drain.
+        let engine = AgentAudioEngine()
+        engine.play(pcm16: Data(count: 3200))
+        #expect(engine.queuedSeconds == 0)
     }
 }
-

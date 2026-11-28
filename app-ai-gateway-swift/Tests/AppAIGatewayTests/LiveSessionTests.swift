@@ -536,6 +536,30 @@ struct LiveSessionTests {
     }
 
     @Test
+    func anAppThatAlwaysSendsStillNoticesALinkThatDiedSilently() async {
+        let links = Links()
+        let session = LiveSession(ticket: ticket, timing: fast(heartbeat: 0.1, heartbeatAnswer: 0.1), now: { Date() }, makeLink: links.make)
+        var events = session.events.makeAsyncIterator()
+        await session.start()
+        links[0].deliver(started)
+        _ = await events.next()
+        // A microphone sends all the time, so the link is never quiet on this side.
+        let microphone = Task {
+            while !Task.isCancelled {
+                await session.send(text: #"{"user_audio_chunk":"AAAA"}"#)
+                try? await Task.sleep(nanoseconds: 10_000_000)
+            }
+        }
+        defer { microphone.cancel() }
+        // Nothing comes back: the heartbeat asks, gets no answer, and the session moves on.
+        #expect(await eventually { links[0].sent.contains(#"{"type":"agw.heartbeat"}"#) })
+        #expect(await events.next() == .reconnecting)
+        #expect(await eventually { links.count == 2 })
+        // One heartbeat while it waited for the answer, not one a tick.
+        #expect(links[0].sent.filter { $0 == #"{"type":"agw.heartbeat"}"# }.count == 1)
+    }
+
+    @Test
     func anAnsweredHeartbeatKeepsTheLink() async {
         let links = Links()
         let session = LiveSession(ticket: ticket, timing: fast(heartbeat: 0.05, heartbeatAnswer: 0.1), now: { Date() }, makeLink: links.make)

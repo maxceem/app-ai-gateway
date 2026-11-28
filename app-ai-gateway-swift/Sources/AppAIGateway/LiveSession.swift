@@ -121,6 +121,8 @@ public actor LiveSession {
     private var reported = 0
     private var lastReportAt: Date
     private var lastSentAt: Date
+    /// When anything last came on the current link.
+    private var lastReceivedAt: Date
     private var droppedAt: Date?
     private var attempts = 0
     /// When a full send queue last made the client come back on a new link.
@@ -149,6 +151,7 @@ public actor LiveSession {
         let start = now()
         lastReportAt = start
         lastSentAt = start
+        lastReceivedAt = start
         (events, continuation) = AsyncStream.makeStream(of: Event.self)
     }
 
@@ -306,6 +309,7 @@ public actor LiveSession {
         }
         // Anything from the relay shows the link is alive.
         heartbeatSentAt = nil
+        lastReceivedAt = now()
         switch message {
         case .string(let text):
             if text.hasPrefix(Self.relayPrefix) {
@@ -465,7 +469,10 @@ public actor LiveSession {
             lastReportAt = time
             forward(.string(#"{"type":"agw.received","bytes":"# + String(received) + "}"), relay: true)
         }
-        if time.timeIntervalSince(lastSentAt) >= timing.heartbeatAfter {
+        // Also when nothing came for as long: an app that always sends (a
+        // microphone) would otherwise never ask whether the link still answers.
+        let quiet = heartbeatSentAt == nil && time.timeIntervalSince(lastReceivedAt) >= timing.heartbeatAfter
+        if quiet || time.timeIntervalSince(lastSentAt) >= timing.heartbeatAfter {
             // The oldest unanswered one counts.
             if heartbeatSentAt == nil { heartbeatSentAt = time }
             forward(.string(#"{"type":"agw.heartbeat"}"#), relay: true)

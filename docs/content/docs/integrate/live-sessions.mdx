@@ -324,27 +324,54 @@ final class CallScreenModel {
     }
 
     func run() async throws {
+        var restarts = 0
         try await voice.start(dynamicVariables: variables)
         call: for await event in voice.events {
             switch event {
+            case .connected:
+                showConnected()
+            case .message(let json):
+                if let status = queueStatus(json) { showQueue(status) }
             case .userTranscript(let text), .agentResponse(let text):
                 show(text)
-            case .ended(let ending) where ending.connectionLost:
+            case .ended(let ending) where ending.connectionLost && restarts < 2:
                 // A new conversation, with a short greeting and the earlier turns.
+                restarts += 1
                 try await voice.start(
                     firstMessage: "Sorry, the line dropped.",
                     dynamicVariables: variables,
                     context: ElevenLabsVoiceClient.contextualUpdate(for: voice.transcript)
                 )
             case .ended:
-                break call // ended on purpose: by the app, the agent or a limit
+                // Ended on purpose (by the app, the agent or a limit), or lost too often.
+                break call
             default:
                 break
             }
         }
     }
+
+    /// ElevenLabs' `queue_status`: `waiting`, `admitted` or `timed_out`.
+    func queueStatus(_ json: String) -> String? {
+        let message = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any]
+        guard message?["type"] as? String == "queue_status" else { return nil }
+        return (message?["queue_status_event"] as? [String: Any])?["status"] as? String
+    }
 }
 ```
+
+`.connected` means ElevenLabs started the conversation and sent its metadata.
+The agent may still be busy: when your ElevenLabs workspace is at its limit
+on calls at once, ElevenLabs can hold the call in a queue (see below). It then
+sends a `queue_status` message, which comes as a `.message`:
+
+- `waiting` comes right after the conversation starts. Show that the call is
+  waiting. ElevenLabs plays hold audio meanwhile, which the client plays like
+  the agent's speech.
+- `admitted` means the agent takes the call now.
+- `timed_out` means the wait was too long. ElevenLabs then ends the call.
+
+A call that the agent takes at once gets no `queue_status`.
 
 Keep the client where the call screen keeps its state, as here, not in a
 local variable. A client that is let go ends the call and stops its audio at

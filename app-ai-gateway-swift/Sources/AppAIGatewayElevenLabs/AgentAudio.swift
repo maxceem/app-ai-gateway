@@ -1,5 +1,8 @@
 @preconcurrency import AVFoundation
 import Foundation
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// The microphone and the speaker, as the voice client uses them. Tests use a fake.
 @MainActor
@@ -13,9 +16,6 @@ protocol AgentAudio: AnyObject, Sendable {
     /// Called with the seconds of queued audio a rebuild of the audio engine
     /// threw away. The queue is already empty then.
     var onLostAudio: ((TimeInterval) -> Void)? { get set }
-    /// Mutes the microphone at its source, so no speech captured while
-    /// muted is sent.
-    var muted: Bool { get set }
     /// Starts the audio session and the engine. Does nothing when they run.
     func start() throws
     /// The rates the conversation uses, from ElevenLabs' `pcm_…` formats.
@@ -41,17 +41,6 @@ final class AgentAudioEngine: AgentAudio {
     private let micOut: AsyncStream<Data>.Continuation
     var onDrained: (() -> Void)?
     var onLostAudio: ((TimeInterval) -> Void)?
-    /// Muted at the source, in voice processing: the microphone gives
-    /// silence. The resampler reads the flag too, to clear a partial chunk.
-    var muted: Bool {
-        get { mute.value }
-        set {
-            mute.value = newValue
-            // Not running: the engine's setup applies it.
-            if running { engine.inputNode.isVoiceProcessingInputMuted = newValue }
-        }
-    }
-    private let mute = MicMute()
 
     private var engine = AVAudioEngine()
     private var player = AVAudioPlayerNode()
@@ -62,8 +51,11 @@ final class AgentAudioEngine: AgentAudio {
     private var generation = 0
     private var queuedFrames = 0
     private var observers: [NSObjectProtocol] = []
-    /// Whether this engine counts as one of the audio session's users.
-    private var holdsSession = false
+    /// The running engines, all on iOS's one audio session. It is let go only
+    /// when the last one stops: a client released after a new one started
+    /// (its teardown runs later, on the main actor) must not stop the new
+    /// one's audio.
+    private static var sessionUsers = 0
 
     var queuedSeconds: TimeInterval { Double(queuedFrames) / outputRate }
 
@@ -78,13 +70,13 @@ final class AgentAudioEngine: AgentAudio {
 
     func start() throws {
         guard !running else { return }
-        try AudioSessionUsers.shared.acquire()
-        holdsSession = true
+        try Self.useSession()
         do {
             try setUpEngine()
         } catch {
             // Let the audio session go again: other apps get their audio back.
             tearDown()
+            Self.leaveSession()
             throw error
         }
         running = true
@@ -101,7 +93,9 @@ final class AgentAudioEngine: AgentAudio {
 
     func play(pcm16 data: Data) {
         let count = data.count / 2
-        guard running, count > 0,
+        // A stopped engine never plays it, and the queue would never drain:
+        // while another app has the audio, or after a rebuild that failed.
+        guard engine.isRunning, count > 0,
               let format = playFormat,
               let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count)),
               let samples = buffer.floatChannelData?[0]
@@ -118,8 +112,7 @@ final class AgentAudioEngine: AgentAudio {
         player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { @Sendable [weak self] _ in
             Task { @MainActor in self?.played(count, of: current) }
         }
-        // While another app has the audio, the engine is stopped: it plays once rebuilt.
-        if engine.isRunning, !player.isPlaying { player.play() }
+        if !player.isPlaying { player.play() }
     }
 
     @discardableResult
@@ -141,16 +134,31 @@ final class AgentAudioEngine: AgentAudio {
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
         observers.removeAll()
         tearDown()
+        Self.leaveSession()
     }
 
     private func tearDown() {
         engine.inputNode.removeTap(onBus: 0)
         player.stop()
         engine.stop()
-        if holdsSession {
-            holdsSession = false
-            AudioSessionUsers.shared.release()
-        }
+    }
+
+    /// Sets the session up and turns it on for each engine: setting it again is harmless.
+    private static func useSession() throws {
+        #if os(iOS)
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playAndRecord, mode: .voiceChat, options: categoryOptions)
+        try? session.setPreferredIOBufferDuration(0.02)
+        try session.setActive(true)
+        #endif
+        sessionUsers += 1
+    }
+
+    private static func leaveSession() {
+        sessionUsers -= 1
+        #if os(iOS)
+        if sessionUsers == 0 { try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation) }
+        #endif
     }
 
     // MARK: - The engine
@@ -160,7 +168,7 @@ final class AgentAudioEngine: AgentAudio {
     }
 
     #if os(iOS)
-    static var categoryOptions: AVAudioSession.CategoryOptions {
+    private static var categoryOptions: AVAudioSession.CategoryOptions {
         // Without Bluetooth HFP, AirPods are not used at all (T17b).
         #if compiler(>=6.2)
         [.allowBluetoothHFP, .defaultToSpeaker]
@@ -174,8 +182,6 @@ final class AgentAudioEngine: AgentAudio {
         // Echo cancellation: with it, the agent never heard itself in T17a.
         // Turning it on changes the configuration, so only when it is off.
         if !engine.inputNode.isVoiceProcessingEnabled { try engine.inputNode.setVoiceProcessingEnabled(true) }
-        // Again on every rebuild: a fresh engine starts unmuted.
-        engine.inputNode.isVoiceProcessingInputMuted = mute.value
         if player.engine == nil { engine.attach(player) }
         engine.connect(player, to: engine.mainMixerNode, format: playFormat)
         try installTap()
@@ -188,7 +194,7 @@ final class AgentAudioEngine: AgentAudio {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: inputRate, channels: 1, interleaved: false),
-              let resampler = MicResampler(from: format, to: target, out: micOut, mute: mute)
+              let resampler = MicResampler(from: format, to: target, out: micOut)
         else { throw AgentAudioError.microphoneFormat }
         input.installTap(onBus: 0, bufferSize: 1024, format: format, block: resampler.tap())
     }
@@ -206,7 +212,8 @@ final class AgentAudioEngine: AgentAudio {
         do {
             try setUpEngine()
         } catch {
-            // The next configuration change or the end of an interruption tries again.
+            // The next configuration change, the end of an interruption or the
+            // app becoming active tries again.
         }
         if lost > 0 { onLostAudio?(lost) }
         // The playback callbacks of the lost audio never come: the queue is
@@ -249,6 +256,15 @@ final class AgentAudioEngine: AgentAudio {
                 self.rebuild(fresh: true)
             }
         })
+        // iOS doesn't always say an interruption ended: the engine is set up
+        // again when the app is back in front.
+        observers.append(center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.running, !self.engine.isRunning else { return }
+                try? AVAudioSession.sharedInstance().setActive(true)
+                self.rebuild()
+            }
+        })
         #endif
     }
 }
@@ -257,87 +273,21 @@ enum AgentAudioError: Error {
     case microphoneFormat
 }
 
-/// The engines using iOS's one shared audio session. It is let go only when
-/// the last one stops: a client released after a new one started (its
-/// teardown runs later, on the main actor) must not stop the new one's audio.
-@MainActor
-final class AudioSessionUsers {
-    static let shared = AudioSessionUsers(
-        activate: {
-            #if os(iOS)
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .voiceChat, options: AgentAudioEngine.categoryOptions)
-            try? session.setPreferredIOBufferDuration(0.02)
-            try session.setActive(true)
-            #endif
-        },
-        deactivate: {
-            #if os(iOS)
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            #endif
-        }
-    )
-
-    private let activate: @MainActor () throws -> Void
-    private let deactivate: @MainActor () -> Void
-    private(set) var count = 0
-
-    init(activate: @escaping @MainActor () throws -> Void, deactivate: @escaping @MainActor () -> Void) {
-        self.activate = activate
-        self.deactivate = deactivate
-    }
-
-    /// Sets the session up and turns it on, for every user: setting it again is harmless.
-    func acquire() throws {
-        try activate()
-        count += 1
-    }
-
-    func release() {
-        guard count > 0 else { return }
-        count -= 1
-        if count == 0 { deactivate() }
-    }
-}
-
-/// The mute switch, set on the main thread and read on the audio thread.
-/// `changes` goes up on each change, so even a mute and unmute between two
-/// buffers is seen.
-final class MicMute: @unchecked Sendable {
-    private let lock = NSLock()
-    private var _value = false
-    private var _changes = 0
-    var value: Bool {
-        get { lock.withLock { _value } }
-        set {
-            lock.withLock {
-                if _value != newValue { _changes += 1 }
-                _value = newValue
-            }
-        }
-    }
-    var changes: Int { lock.withLock { _changes } }
-}
-
 /// Turns the microphone's buffers into 100 ms PCM16 chunks at the agent's
 /// rate. It runs on the audio thread only, one per tap.
 final class MicResampler: @unchecked Sendable {
     private let converter: AVAudioConverter
     private let target: AVAudioFormat
     private let out: AsyncStream<Data>.Continuation
-    private let mute: MicMute
-    private var changes: Int
     private var samples: [Float] = []
     private let chunk: Int
 
-    init?(from source: AVAudioFormat, to target: AVAudioFormat, out: AsyncStream<Data>.Continuation, mute: MicMute) {
+    init?(from source: AVAudioFormat, to target: AVAudioFormat, out: AsyncStream<Data>.Continuation) {
         guard let converter = AVAudioConverter(from: source, to: target) else { return nil }
         if source.channelCount > 1 { converter.channelMap = [0] }
         self.converter = converter
         self.target = target
         self.out = out
-        self.mute = mute
-        changes = mute.changes
         chunk = Int(target.sampleRate / 10)
     }
 
@@ -346,7 +296,7 @@ final class MicResampler: @unchecked Sendable {
         { [self] buffer, _ in take(buffer) }
     }
 
-    func take(_ buffer: AVAudioPCMBuffer) {
+    private func take(_ buffer: AVAudioPCMBuffer) {
         guard buffer.frameLength > 0 else { return }
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * target.sampleRate / buffer.format.sampleRate + 64)
         guard let converted = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return }
@@ -362,13 +312,6 @@ final class MicResampler: @unchecked Sendable {
             return buffer
         }
         guard status != .error, let floats = converted.floatChannelData?[0] else { return }
-        // The source gives silence while muted. A partial chunk is cleared at
-        // each change, so it never mixes the two.
-        let changes = mute.changes
-        if changes != self.changes {
-            self.changes = changes
-            samples.removeAll()
-        }
         samples.append(contentsOf: UnsafeBufferPointer(start: floats, count: Int(converted.frameLength)))
         while samples.count >= chunk {
             var data = Data(count: chunk * 2)

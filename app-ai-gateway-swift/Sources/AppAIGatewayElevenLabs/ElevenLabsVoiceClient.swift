@@ -45,7 +45,9 @@ public final class ElevenLabsVoiceClient {
     public enum Event: Sendable, Equatable {
         /// ``start(firstMessage:dynamicVariables:context:)`` asked the gateway for a session.
         case connecting
-        /// The agent's conversation started. `conversationID` is ElevenLabs' id for it.
+        /// ElevenLabs started the conversation and sent its metadata.
+        /// `conversationID` is ElevenLabs' id for it. A call ElevenLabs holds in
+        /// its queue is connected too: a `queue_status` ``message(_:)`` follows.
         case connected(conversationID: String)
         /// The link dropped, and the client is trying to keep the same conversation.
         case reconnecting
@@ -135,9 +137,16 @@ public final class ElevenLabsVoiceClient {
     /// Mutes the microphone, for push-to-talk or a mute button. Other people
     /// talking near the phone keep the user's turn open on ElevenLabs' side
     /// (T17b). Silence is sent instead, so ElevenLabs still sees a turn end.
+    ///
+    /// One rule: every microphone chunk that overlaps muted time is sent as
+    /// silence, up to the first chunk that starts fully unmuted. So speech
+    /// captured while muted is never sent; up to 100 ms after unmuting may be
+    /// lost.
     public var isMicrophoneMuted = false {
-        didSet { audio.muted = isMicrophoneMuted }
+        didSet { if isMicrophoneMuted { chunkOverlapsMute = true } }
     }
+    /// Whether the chunk being built started while muted, or was muted since.
+    private var chunkOverlapsMute = false
 
     private nonisolated let continuation: AsyncStream<Event>.Continuation
     private let open: @MainActor (_ takesOver: String?) async throws -> any AgentSession
@@ -221,13 +230,17 @@ public final class ElevenLabsVoiceClient {
     ) async throws {
         guard !isActive else { return }
         starting = true
-        defer { starting = false }
         generation += 1
         let current = generation
         // Audio left from an earlier conversation goes first: played on, it
         // made a new greeting about 50 s late (T17a).
         audio.flush()
-        try audio.start()
+        do {
+            try audio.start()
+        } catch {
+            starting = false
+            throw error
+        }
         dropBelow = 0
         lastAudioID = nil
         conversationStarted = false
@@ -237,12 +250,16 @@ public final class ElevenLabsVoiceClient {
         do {
             session = try await open(lastSessionID)
         } catch {
-            starting = false
-            if generation == current { stopAudioIfIdle() }
+            // `end()`, and maybe a newer start, took over meanwhile: then they own `starting`.
+            if generation == current {
+                starting = false
+                stopAudioIfIdle()
+            }
             throw error
         }
         // The app ended the call meanwhile: the session is never opened, and its ticket expires.
         guard generation == current else { return }
+        starting = false
         self.session = session
         lastSessionID = session.sessionID
         let (queue, outbox) = AsyncStream.makeStream(of: String.self)
@@ -271,6 +288,8 @@ public final class ElevenLabsVoiceClient {
     public func end() {
         let wasActive = isActive
         generation += 1
+        // A start still waiting for its session gives up: a new one may begin at once.
+        starting = false
         let session = self.session
         finishConversation()
         audio.flush()
@@ -329,8 +348,11 @@ public final class ElevenLabsVoiceClient {
     }
 
     private func micChunk(_ pcm: Data) {
+        let silent = chunkOverlapsMute
+        // The next chunk starts now: muted still, or fully unmuted.
+        chunkOverlapsMute = isMicrophoneMuted
         guard micOn, let outbox else { return }
-        let pcm = isMicrophoneMuted ? Data(count: pcm.count) : pcm
+        let pcm = silent ? Data(count: pcm.count) : pcm
         // Written exactly so: the relay passes an audio chunk alone without reading it.
         outbox.yield(#"{"user_audio_chunk":""# + pcm.base64EncodedString() + #""}"#)
     }

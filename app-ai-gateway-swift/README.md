@@ -204,16 +204,29 @@ it to your target beside `AppAIGateway`:
 ```swift
 import AppAIGatewayElevenLabs
 
-let voice = ElevenLabsVoiceClient(gateway: gateway, agentID: "agent_7201…")
-try await voice.start()
-for await event in voice.events {
-    // .userTranscript, .agentResponse, .interrupted, .ended(…), …
+/// The call screen's state: it keeps the client for the whole call.
+@MainActor
+final class CallScreenModel {
+    let voice: ElevenLabsVoiceClient
+
+    init(gateway: AppAIGatewayClient) {
+        voice = ElevenLabsVoiceClient(gateway: gateway, agentID: "agent_7201…")
+    }
+
+    func run() async throws {
+        try await voice.start()
+        for await event in voice.events {
+            if case .ended = event { break }
+            // .userTranscript, .agentResponse, .interrupted, …
+        }
+    }
 }
 ```
 
-The app needs microphone permission and the `audio` background mode. See the
-gateway's live sessions guide for a lost connection, the stop button and
-noisy places.
+Keep the client in the screen's state, not in a local variable: a client
+that is let go ends the call at once. The app needs microphone permission and
+the `audio` background mode. See the gateway's live sessions guide for a lost
+connection, the stop button and noisy places.
 
 ### Upgrading to 2.0
 
