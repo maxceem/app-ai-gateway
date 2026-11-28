@@ -144,6 +144,14 @@ export class Session extends DurableObject {
     const storage = ctx.storage;
     /** @type {Live | null} The session this instance runs, once it started. A restart loses it. */
     this.live = null;
+    /** An observed call's answer in progress, read from its side channel (the adapter's `turn`). */
+    this.sideTurnOpen = false;
+    /** The side channel's answers opened, and its attaches: a late "done" for an earlier one closes nothing. */
+    this.sideTurns = 0;
+    /** @type {import("./adapters.js").CallMeter | null} What the current side channel's adapter remembers (OpenAI's). */
+    this.sideMeter = null;
+    /** @type {string | null} A model the provider stated that is not the session's, logged once (`sideFrame`). */
+    this.otherModel = null;
     this.core = new SessionCore({
       store: {
         get: (keys) => storage.get(keys),
@@ -207,7 +215,8 @@ export class Session extends DurableObject {
           const socket = await attachSideChannel(key, callId, limitMs);
           const adapter = adapterFor(settings.adapter);
           // A side channel starts with nothing open: an answer a lost one missed is in its gap (OpenAI's meter).
-          const meter = adapter.perCall?.(settings.model ?? null, settings) ?? null;
+          // What the one it replaces on this call must not forget goes on (`next`: committed items' models).
+          const meter = this.sideMeter?.next?.() ?? adapter.perCall?.(settings.model ?? null, settings) ?? null;
           const keepalive = adapter.sideKeepalive;
           /** @type {import("./start.js").ProviderCall} */
           const call = {
@@ -242,14 +251,6 @@ export class Session extends DurableObject {
         return meter === undefined || meter === null ? this.live.turnOpen : meter.unfinished();
       },
     });
-    /** An observed call's answer in progress, read from its side channel (the adapter's `turn`). */
-    this.sideTurnOpen = false;
-    /** The side channel's answers opened, and its attaches: a late "done" for an earlier one closes nothing. */
-    this.sideTurns = 0;
-    /** @type {import("./adapters.js").CallMeter | null} What the current side channel's adapter remembers (OpenAI's). */
-    this.sideMeter = null;
-    /** @type {string | null} A model the provider stated that is not the session's, logged once (`sideFrame`). */
-    this.otherModel = null;
   }
 
   /**

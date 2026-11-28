@@ -43,6 +43,7 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   estimate(): UsageEvent | null,
  *   lock(data: string | ArrayBuffer): string | ArrayBuffer | { refused: string },
  *   otherModel?(): string | null,
+ *   next?(): CallMeter,
  * }} CallMeter
  * `perCall`, for a provider that needs to remember something about one call
  * (OpenAI Realtime, 9e): what the session says (`see`, each provider frame
@@ -56,7 +57,9 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  * (`estimate`, the session core's hook) and the model lock on the client's
  * frames (`lock`, before each goes to the provider). `otherModel`: a model the provider stated for the
  * session that is not the session's own, or null (an observed call, whose client frames the relay never
- * sees: `../index.js` logs it). `lock` may refuse a frame
+ * sees: `../index.js` logs it). `next`: the meter for a side channel that replaces this one on the same
+ * observed call: what it must not forget (OpenAI's committed items' transcription models) goes on, and
+ * everything it waits for starts fresh. `lock` may refuse a frame
  * (`{ refused: code }`): the session then ends, and the client gets `1008` with the code (GPT-Live's
  * backend rules, 9g).
  * `turn` tells when the provider starts an answer and when it is done (OpenAI's
@@ -577,21 +580,28 @@ const OPENAI_OPEN_MAX = 64;
  *   round 1); and each finished answer or transcription until its usage is
  *   written, which a closing session waits for.
  * @param {string | null} model the session's locked model
+ * @param {{ models: Map<string, string>, transcribedBy: string | null }} [carried] what an earlier side
+ *   channel's meter on the same call knew (`next`)
  * @returns {CallMeter}
  */
-function openAiCall(model) {
+function openAiCall(model, carried) {
   /** @type {"pcm" | "g711"} */
   let format = "pcm";
   /** @type {string | null} */
-  let transcribedBy = null;
+  let transcribedBy = carried?.transcribedBy ?? null;
   /** @type {string | null} The model OpenAI last stated for the session. */
   let stated = null;
   /** @type {string[]} The open answers' `response.id`s ("" for one with none), oldest first. */
   const open = [];
   let chars = 0;
   let finishedCount = 0;
-  /** @type {Map<string, string>} Committed audio items whose transcription is still to come, with its model then. */
-  const pending = new Map();
+  /** @type {Set<string>} Committed audio items whose transcription is still to come, which a closing session waits for. */
+  const pending = new Set();
+  /**
+   * @type {Map<string, string>} Each committed item's transcription model at its commit, until its transcription
+   * ends: kept across a side channel's replacement (`next`), so a model change in between never moves it.
+   */
+  const models = carried?.models ?? new Map();
   /** @type {Map<string, string>} A completed transcription's model, by its event id, until `label` books it. */
   const completed = new Map();
   /** @type {Set<string>} Answers and transcriptions that finished, whose usage is still being written. */
@@ -638,20 +648,24 @@ function openAiCall(model) {
         if (named !== undefined) transcribedBy = named;
       } else if (type === "input_audio_buffer.committed") {
         const item = itemOf(data);
-        if (transcribedBy !== null && item !== "" && pending.size < OPENAI_OPEN_MAX) pending.set(item, transcribedBy);
+        if (transcribedBy !== null && item !== "" && pending.size < OPENAI_OPEN_MAX) {
+          pending.add(item);
+          if (models.size >= OPENAI_OPEN_MAX) models.delete(models.keys().next().value ?? "");
+          models.set(item, transcribedBy);
+        }
       } else if (OPENAI_TRANSCRIPTION_ENDS.has(type)) {
         // A transcription completed or failed, or its item was deleted: it is no longer waited for. A
         // completion is billed at the model its item was committed under (`label`).
         const frame = /** @type {{ event_id?: unknown, item_id?: unknown } | null} */ (parsed(data));
         const item = typeof frame?.item_id === "string" ? frame.item_id : "";
-        const committedUnder = pending.get(item);
-        if (committedUnder === undefined) return null;
-        pending.delete(item);
-        if (type === "conversation.item.input_audio_transcription.completed" && typeof frame?.event_id === "string") {
+        const committedUnder = models.get(item);
+        models.delete(item);
+        if (committedUnder !== undefined && type === "conversation.item.input_audio_transcription.completed" && typeof frame?.event_id === "string") {
           if (completed.size >= OPENAI_OPEN_MAX) completed.delete(completed.keys().next().value ?? "");
           completed.set(frame.event_id.slice(0, 128), committedUnder);
         }
-        return finished(`item:${item}`);
+        // Waited for only on the side channel that saw it committed: a replacement's waits start fresh.
+        return pending.delete(item) ? finished(`item:${item}`) : null;
       }
       return null;
     },
@@ -660,6 +674,9 @@ function openAiCall(model) {
     },
     otherModel() {
       return model !== null && stated !== null && stated !== model ? stated : null;
+    },
+    next() {
+      return openAiCall(model, { models, transcribedBy });
     },
     pending() {
       return open.length > 0 || pending.size > 0 || writing.size > 0;

@@ -359,4 +359,25 @@ describe("OpenAI's answers and transcriptions across a reattach or a settings ch
     expect(through(meter, completedFor("item_0"))).toMatchObject({ model: "gpt-4o-transcribe" });
     expect(meter.unfinished()).toBe(false);
   });
+
+  it("a replacement side channel keeps each committed item's model: an item committed before a reattach and a model switch is billed at its commit's model (Sol, #277 round 2)", () => {
+    const first = OPENAI.perCall!("gpt-realtime-2.1");
+    through(first, updated("gpt-4o-mini-transcribe"));
+    through(first, committed("item_1"));
+    through(first, created("resp_1"));
+    // The side channel is replaced on the same call, as the session object does at a reattach.
+    const second = first.next!();
+    // Its answers and waits start fresh: the old channel's open answer and pending item are not waited for.
+    expect(second.unfinished()).toBe(false);
+    expect(second.pending()).toBe(false);
+    through(second, updated("gpt-4o-transcribe"));
+    expect(through(second, completedFor("item_1"))).toMatchObject({ model: "gpt-4o-mini-transcribe" });
+    // An item committed on the new channel takes the model of its own commit, and is waited for.
+    through(second, committed("item_2"));
+    expect(second.unfinished()).toBe(true);
+    expect(through(second, completedFor("item_2"))).toMatchObject({ model: "gpt-4o-transcribe" });
+    expect(second.unfinished()).toBe(false);
+    // The model last stated goes on too: an item the relay never saw committed takes it.
+    expect(through(first.next!(), completedFor("item_9"))).toMatchObject({ model: "gpt-4o-mini-transcribe" });
+  });
 });
