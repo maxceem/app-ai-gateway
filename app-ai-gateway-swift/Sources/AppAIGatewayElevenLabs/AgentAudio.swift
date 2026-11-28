@@ -237,27 +237,31 @@ final class AgentAudioEngine: AgentAudio {
 
     private func observe() {
         let center = NotificationCenter.default
+        // AVFoundation posts these on its own threads, and its queue waits for
+        // the observer to return. Stopping or rebuilding the engine inside it
+        // could freeze the app, so the work runs afterwards, on the main actor
+        // (Apple's AVAudioEngineConfigurationChange guidance).
         // Any engine: after a media services reset the engine is a new one.
-        observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main) { [weak self] note in
+        observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: nil) { [weak self] note in
             let source = (note.object as AnyObject?).map(ObjectIdentifier.init)
-            MainActor.assumeIsolated {
+            Task { @MainActor in
                 guard let self, self.running, source == ObjectIdentifier(self.engine) else { return }
                 self.rebuild()
             }
         })
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
-        observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: session, queue: .main) { [weak self] note in
+        observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: session, queue: nil) { [weak self] note in
             let ended = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) == AVAudioSession.InterruptionType.ended.rawValue
-            MainActor.assumeIsolated {
+            Task { @MainActor in
                 guard ended, let self, self.running else { return }
                 // Even without "should resume": the call is still on (T17b).
                 try? AVAudioSession.sharedInstance().setActive(true)
                 self.rebuild()
             }
         })
-        observers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: session, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
+        observers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: session, queue: nil) { [weak self] _ in
+            Task { @MainActor in
                 guard let self, self.running else { return }
                 try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: Self.categoryOptions)
                 try? AVAudioSession.sharedInstance().setActive(true)
@@ -265,7 +269,8 @@ final class AgentAudioEngine: AgentAudio {
             }
         })
         // iOS doesn't always say an interruption ended: the engine is set up
-        // again when the app is back in front.
+        // again when the app is back in front. UIKit posts this on the main
+        // thread, and no audio queue waits for it, so it runs here at once.
         observers.append(center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.running, !self.engine.isRunning else { return }

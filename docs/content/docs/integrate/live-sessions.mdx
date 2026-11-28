@@ -319,6 +319,10 @@ import Foundation
 final class CallScreenModel {
     let voice: ElevenLabsVoiceClient
     let variables: [String: ElevenLabsVoiceClient.DynamicVariable] = ["user_name": "Ann"]
+    // What the screen shows.
+    private(set) var connected = false
+    private(set) var queue: String?
+    private(set) var lines: [String] = []
 
     init(gateway: AppAIGatewayClient) {
         voice = ElevenLabsVoiceClient(gateway: gateway, agentID: "agent_7201m7pd…")
@@ -330,11 +334,11 @@ final class CallScreenModel {
         call: for await event in voice.events {
             switch event {
             case .connected:
-                showConnected()
+                connected = true
             case .message(let json):
-                if let status = queueStatus(json) { showQueue(status) }
+                if let status = queueStatus(json) { queue = status }
             case .userTranscript(let text), .agentResponse(let text):
-                show(text)
+                lines.append(text)
             case .ended(let ending) where ending.connectionLost && restarts < 2:
                 // A new conversation, with a short greeting and the earlier turns.
                 restarts += 1
