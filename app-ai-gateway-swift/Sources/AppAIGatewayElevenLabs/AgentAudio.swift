@@ -62,6 +62,8 @@ final class AgentAudioEngine: AgentAudio {
     private var generation = 0
     private var queuedFrames = 0
     private var observers: [NSObjectProtocol] = []
+    /// Whether this engine counts as one of the audio session's users.
+    private var holdsSession = false
 
     var queuedSeconds: TimeInterval { Double(queuedFrames) / outputRate }
 
@@ -76,12 +78,8 @@ final class AgentAudioEngine: AgentAudio {
 
     func start() throws {
         guard !running else { return }
-        #if os(iOS)
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .voiceChat, options: Self.categoryOptions)
-        try? session.setPreferredIOBufferDuration(0.02)
-        try session.setActive(true)
-        #endif
+        try AudioSessionUsers.shared.acquire()
+        holdsSession = true
         do {
             try setUpEngine()
         } catch {
@@ -149,9 +147,10 @@ final class AgentAudioEngine: AgentAudio {
         engine.inputNode.removeTap(onBus: 0)
         player.stop()
         engine.stop()
-        #if os(iOS)
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        #endif
+        if holdsSession {
+            holdsSession = false
+            AudioSessionUsers.shared.release()
+        }
     }
 
     // MARK: - The engine
@@ -161,7 +160,7 @@ final class AgentAudioEngine: AgentAudio {
     }
 
     #if os(iOS)
-    private static var categoryOptions: AVAudioSession.CategoryOptions {
+    static var categoryOptions: AVAudioSession.CategoryOptions {
         // Without Bluetooth HFP, AirPods are not used at all (T17b).
         #if compiler(>=6.2)
         [.allowBluetoothHFP, .defaultToSpeaker]
@@ -258,14 +257,66 @@ enum AgentAudioError: Error {
     case microphoneFormat
 }
 
+/// The engines using iOS's one shared audio session. It is let go only when
+/// the last one stops: a client released after a new one started (its
+/// teardown runs later, on the main actor) must not stop the new one's audio.
+@MainActor
+final class AudioSessionUsers {
+    static let shared = AudioSessionUsers(
+        activate: {
+            #if os(iOS)
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playAndRecord, mode: .voiceChat, options: AgentAudioEngine.categoryOptions)
+            try? session.setPreferredIOBufferDuration(0.02)
+            try session.setActive(true)
+            #endif
+        },
+        deactivate: {
+            #if os(iOS)
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            #endif
+        }
+    )
+
+    private let activate: @MainActor () throws -> Void
+    private let deactivate: @MainActor () -> Void
+    private(set) var count = 0
+
+    init(activate: @escaping @MainActor () throws -> Void, deactivate: @escaping @MainActor () -> Void) {
+        self.activate = activate
+        self.deactivate = deactivate
+    }
+
+    /// Sets the session up and turns it on, for every user: setting it again is harmless.
+    func acquire() throws {
+        try activate()
+        count += 1
+    }
+
+    func release() {
+        guard count > 0 else { return }
+        count -= 1
+        if count == 0 { deactivate() }
+    }
+}
+
 /// The mute switch, set on the main thread and read on the audio thread.
+/// `changes` goes up on each change, so even a mute and unmute between two
+/// buffers is seen.
 final class MicMute: @unchecked Sendable {
     private let lock = NSLock()
     private var _value = false
+    private var _changes = 0
     var value: Bool {
         get { lock.withLock { _value } }
-        set { lock.withLock { _value = newValue } }
+        set {
+            lock.withLock {
+                if _value != newValue { _changes += 1 }
+                _value = newValue
+            }
+        }
     }
+    var changes: Int { lock.withLock { _changes } }
 }
 
 /// Turns the microphone's buffers into 100 ms PCM16 chunks at the agent's
@@ -275,7 +326,7 @@ final class MicResampler: @unchecked Sendable {
     private let target: AVAudioFormat
     private let out: AsyncStream<Data>.Continuation
     private let mute: MicMute
-    private var muted = false
+    private var changes: Int
     private var samples: [Float] = []
     private let chunk: Int
 
@@ -286,6 +337,7 @@ final class MicResampler: @unchecked Sendable {
         self.target = target
         self.out = out
         self.mute = mute
+        changes = mute.changes
         chunk = Int(target.sampleRate / 10)
     }
 
@@ -312,9 +364,9 @@ final class MicResampler: @unchecked Sendable {
         guard status != .error, let floats = converted.floatChannelData?[0] else { return }
         // The source gives silence while muted. A partial chunk is cleared at
         // each change, so it never mixes the two.
-        let muted = mute.value
-        if muted != self.muted {
-            self.muted = muted
+        let changes = mute.changes
+        if changes != self.changes {
+            self.changes = changes
             samples.removeAll()
         }
         samples.append(contentsOf: UnsafeBufferPointer(start: floats, count: Int(converted.frameLength)))
