@@ -387,8 +387,8 @@ describe("saving a listing", () => {
   });
 
   it.each([
-    [[{ method: "POST", path: "v1/realtime/{action}" }, { method: "POST", path: "v1/realtime/client_secrets" }]],
-    [[{ method: "POST", path: "v1/realtime/client_secrets" }, { method: "POST", path: "v1/realtime/{action}" }]],
+    [[{ method: "POST", path: "v1/realtime/client_{kind}" }, { method: "POST", path: "v1/realtime/client_secrets" }]],
+    [[{ method: "POST", path: "v1/realtime/client_secrets" }, { method: "POST", path: "v1/realtime/client_{kind}" }]],
   ])("keeps two listings that can match one request, in either order, and the exact one keeps its defaults: %j", async (passthrough) => {
     const { status, body } = await create({ type: "openai", passthrough });
     expect(status).toBe(201);
@@ -539,7 +539,7 @@ describe("serving a listing with field settings", () => {
     });
 
     it("judges a mint by the path it serves, not by the listing's template", async () => {
-      const { appId, slug, key } = await connected({ type: "openai", passthrough: [{ method: "POST", path: "v1/realtime/{resource}" }] });
+      const { appId, slug, key } = await connected({ type: "openai", passthrough: [{ method: "POST", path: "v1/realtime/client_{kind}" }] });
       fetchSpy.mockImplementation(async () => Response.json({ value: "ek" }, { headers: { "cache-control": "public, max-age=300" } }));
       const { status, headers } = await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/realtime/client_secrets`, key, "{}", cacheHeaders);
       expect(status).toBe(200);

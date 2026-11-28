@@ -13,9 +13,11 @@
 // /last-key-header; the hang-ups it got, at /hangups; and how many calls were
 // made for an offer with the line `a=x-test:<tag>`, at /calls/<tag>. A custom
 // provider's key header (`x-api-key`), with the `authorization` header and the
-// query the last request had, is at /last-headers.
+// query the last request had, is at /last-headers. What observed calls' side
+// channels got is at /side-messages, and the `session` each call was made
+// with at /sessions.
 import { geminiLive } from "./gemini-live-stub.js";
-import { observedCall } from "./observed-call.js";
+import { observedCall, sessions, sideMessages } from "./observed-call.js";
 
 let lastKeyHeader = null;
 let lastHeaders = { authorization: null, "x-api-key": null, query: "" };
@@ -28,6 +30,8 @@ export default {
     if (url.pathname === "/last-key-header") return Response.json({ authorization: lastKeyHeader });
     if (url.pathname === "/last-headers") return Response.json(lastHeaders);
     if (url.pathname === "/hangups") return Response.json(hangups);
+    if (url.pathname === "/side-messages") return Response.json(sideMessages);
+    if (url.pathname === "/sessions") return Response.json(sessions);
     if (url.pathname.startsWith("/calls/")) return Response.json({ made: calls.get(url.pathname.slice("/calls/".length)) ?? 0 });
     lastKeyHeader = request.headers.get("authorization");
     lastHeaders = { authorization: lastKeyHeader, "x-api-key": request.headers.get("x-api-key"), query: url.search };

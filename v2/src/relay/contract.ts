@@ -86,6 +86,8 @@ const RELAY_ADAPTERS: Readonly<Record<string, string>> = {
   "gemini.live.v1beta": "gemini",
   "gemini.live.v1alpha": "gemini",
   "openai.realtime": "openai",
+  // Observed (step 12): the same events, read from the call's side channel.
+  "openai.realtime.calls": "openai",
   "openai.live": "gptlive",
   "elevenlabs.tts_websocket": "elevenlabs_tts",
   "deepgram.listen_stream": "deepgram",

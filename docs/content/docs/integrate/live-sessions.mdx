@@ -21,6 +21,7 @@ These providers are served today:
 | Provider | Live-session path | Model |
 | --- | --- | --- |
 | OpenAI Realtime | `v1/realtime` | for example `gpt-realtime-2.1` |
+| OpenAI Realtime over WebRTC | `v1/realtime/calls`. See [OpenAI Realtime over WebRTC](#openai-realtime-over-webrtc) | for example `gpt-realtime-2.1` |
 | xAI voice | `v1/realtime` | for example `grok-voice-3.0` |
 | Gemini Live | `ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent` (or `v1alpha`) | for example `gemini-3.1-flash-live-preview` |
 | OpenAI GPT-Live | `v1/live/sessions` | `gpt-live-1` |
@@ -248,6 +249,37 @@ Start a new session then.
   first audio when that is longer. A few minutes after the session ends, the
   charge is corrected to Deepgram's own figure for the stream, when the
   connection's key may read Deepgram's usage (its `usage:read` permission).
+
+## OpenAI Realtime over WebRTC
+
+With WebRTC, the audio goes between the device and OpenAI directly, and the
+relay only watches the call. Turn on the `openai.realtime.calls` operation for
+the app, and ask for a session with `{"path": "v1/realtime/calls", "model": "gpt-realtime-2.1"}`.
+The answer's `relay_url` is an `https` address. There is no WebSocket to the
+relay:
+
+1. Make the WebRTC offer as for OpenAI, with its `oai-events` data channel.
+2. `POST` it to `relay_url` with `Authorization: Bearer <ticket>`, as OpenAI
+   takes it at `v1/realtime/calls`: the SDP alone (`Content-Type: application/sdp`),
+   or a form with `sdp` and `session`, the session's settings as JSON.
+3. Apply the answer, a `201` with OpenAI's SDP, and talk to OpenAI over the
+   connection as usual.
+
+The session's model is the one you asked the gateway for, whatever `session`
+names. A refused offer gets JSON with a code, such as `400 offer_invalid` for a
+form with no `sdp`, `409 session_active` for a second offer with the same
+ticket, or `502 provider_unavailable` when OpenAI refused the call.
+
+The relay ends the call at `ends_at`, or when a limit is reached. When the user
+is done, close the peer connection: OpenAI then ends the call within seconds.
+
+About once a minute your data channel gets a `session.updated` that changes
+nothing: the relay's way to keep watching the call. It can arrive while your
+own `session.update` waits for its answer, and its `event_id` is OpenAI's.
+So don't match `session.updated` to your updates by count or id: compare each
+one with the last `session.updated`, and ignore one that is unchanged. Don't
+compare it with `session.created`: OpenAI sends a `session.updated` of its own
+right after the start.
 
 ## ElevenLabs agents
 

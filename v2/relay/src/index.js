@@ -201,16 +201,25 @@ export class Session extends DurableObject {
           socket.addEventListener("close", () => void this.core.providerGone(call));
           return call;
         },
-        createCall: (key, offer) => createObservedCall(key, offer),
+        createCall: (key, offer, model) => createObservedCall(key, offer, model),
         // An observed call's side channel: its frames are read for usage, never forwarded anywhere.
-        attach: async (key, callId, adapterName, limitMs) => {
+        attach: async (key, callId, settings, limitMs) => {
           const socket = await attachSideChannel(key, callId, limitMs);
-          const adapter = adapterFor(adapterName);
+          const adapter = adapterFor(settings.adapter);
+          // A side channel starts with nothing open: an answer a lost one missed is in its gap (OpenAI's meter).
+          const meter = adapter.perCall?.(settings.model ?? null, settings) ?? null;
+          const keepalive = adapter.sideKeepalive;
           /** @type {import("./start.js").ProviderCall} */
-          const call = { callId, close: (code, reason) => closeQuietly(socket, code, reason) };
+          const call = {
+            callId,
+            close: (code, reason) => closeQuietly(socket, code, reason),
+            ...(keepalive === undefined ? {} : { keepalive: () => sendQuietly(socket, keepalive) }),
+          };
+          this.sideMeter = meter;
           this.sideTurnOpen = false;
           this.sideTurns += 1;
-          socket.addEventListener("message", (event) => this.sideFrame(call, adapter, event.data));
+          this.otherModel = null;
+          socket.addEventListener("message", (event) => this.sideFrame(call, adapter, meter, event.data));
           socket.addEventListener("close", () => void this.core.sideGone(call));
           return call;
         },
@@ -222,13 +231,13 @@ export class Session extends DurableObject {
       // An answer in progress, or an input transcription still to come (OpenAI): a closing session waits for both.
       // OpenAI's: its answers by id and its transcriptions (the call's meter), each until its usage is written.
       turnOpen: () => {
-        if (this.live === null) return this.sideTurnOpen;
+        if (this.live === null) return this.sideMeter?.pending() ?? this.sideTurnOpen;
         const meter = this.live.call?.meter;
         return meter === undefined || meter === null ? this.live.turnOpen : meter.pending();
       },
       // What the provider never finished: cut, if the session ends now.
       unfinished: () => {
-        if (this.live === null) return this.sideTurnOpen;
+        if (this.live === null) return this.sideMeter?.unfinished() ?? this.sideTurnOpen;
         const meter = this.live.call?.meter;
         return meter === undefined || meter === null ? this.live.turnOpen : meter.unfinished();
       },
@@ -237,6 +246,10 @@ export class Session extends DurableObject {
     this.sideTurnOpen = false;
     /** The side channel's answers opened, and its attaches: a late "done" for an earlier one closes nothing. */
     this.sideTurns = 0;
+    /** @type {import("./adapters.js").CallMeter | null} What the current side channel's adapter remembers (OpenAI's). */
+    this.sideMeter = null;
+    /** @type {string | null} A model the provider stated that is not the session's, logged once (`sideFrame`). */
+    this.otherModel = null;
   }
 
   /**
@@ -334,7 +347,7 @@ export class Session extends DurableObject {
    */
   async observedStart(request, ticketText, ticket) {
     const offer = await readOffer(request);
-    if (offer === null) return refusal(413, "offer_too_large");
+    if (typeof offer === "number") return offer === 413 ? refusal(413, "offer_too_large") : refusal(400, "offer_invalid");
     /** @type {import("./start.js").Client} No socket to close: the app has its answer, or its refusal. */
     const owner = { close: () => undefined };
     /** @type {Awaited<ReturnType<SessionCore["start"]>>} */
@@ -359,13 +372,36 @@ export class Session extends DurableObject {
   /**
    * An observed call's side-channel frame: read for usage and answers, after
    * nothing (there is no client to forward it to). Only the current side
-   * channel counts.
+   * channel counts. Any frame says it is alive (the idle rule). With the
+   * adapter's meter (OpenAI's), its answers and transcriptions are tracked as
+   * a relayed call's are (`toClient`).
    * @param {import("./start.js").ProviderCall} call
    * @param {import("./adapters.js").Adapter} adapter
+   * @param {import("./adapters.js").CallMeter | null} meter
    * @param {string | ArrayBuffer} data
    */
-  sideFrame(call, adapter, data) {
+  sideFrame(call, adapter, meter, data) {
     if (this.core.call !== call) return;
+    this.core.heard();
+    if (meter !== null) {
+      const finished = meter.see(data, false);
+      // The app named another model on its own data channel, which the relay never sees: the session is
+      // still billed at its own model, so it is logged, once per model (AGENTS.md: never miscount silently).
+      const other = meter.otherModel?.() ?? null;
+      if (other !== null && other !== this.otherModel) {
+        this.otherModel = other;
+        this.core.log({ level: "warn", message: "relay_model_changed", session: this.core.sessionId });
+      }
+      const settle =
+        finished === null
+          ? undefined
+          : () => {
+              meter.settled(finished);
+              if (!meter.pending()) this.core.turnDone();
+            };
+      if (this.readUsage(adapter, data, meter, settle) === null) settle?.();
+      return;
+    }
     const recorded = this.readUsage(adapter, data);
     const turn = adapter.turn(data);
     if (turn === "open") {
@@ -770,9 +806,43 @@ const START_STATUS = /** @type {Record<string, number>} */ ({
 /** The largest offer the relay reads: a real SDP offer is a few KB. */
 const MAX_OFFER_BYTES = 64 * 1024;
 
-/** The request's offer, as text, or null when it is larger than `MAX_OFFER_BYTES`. @param {Request} request */
+/**
+ * The request's offer, in either form OpenAI takes at `…/realtime/calls`: the SDP alone, or a
+ * `multipart/form-data` body with `sdp` and `session` (the session's settings, a JSON object). Read whole,
+ * as any message that can change settings is (plan 5.1). A status instead: 413 when it is larger than
+ * `MAX_OFFER_BYTES`, 400 when a form has no `sdp` or a `session` that is not a JSON object.
+ * @param {Request} request
+ * @returns {Promise<import("./start.js").Offer | 400 | 413>}
+ */
 async function readOffer(request) {
-  if (request.body === null) return "";
+  const bytes = await readBody(request);
+  if (bytes === null) return 413;
+  const type = request.headers.get("content-type") ?? "";
+  if (!/^multipart\/form-data\s*;/iu.test(type)) return { sdp: new TextDecoder().decode(bytes), session: {} };
+  /** @type {FormData} */
+  let form;
+  try {
+    form = await new Response(bytes, { headers: { "content-type": type } }).formData();
+  } catch {
+    return 400;
+  }
+  const sdp = form.get("sdp");
+  const settings = form.get("session");
+  if (typeof sdp !== "string") return 400;
+  if (settings === null) return { sdp, session: {} };
+  if (typeof settings !== "string") return 400;
+  try {
+    const session = JSON.parse(settings);
+    if (typeof session !== "object" || session === null || Array.isArray(session)) return 400;
+    return { sdp, session };
+  } catch {
+    return 400;
+  }
+}
+
+/** The request's body, or null when it is larger than `MAX_OFFER_BYTES`. @param {Request} request */
+async function readBody(request) {
+  if (request.body === null) return new Uint8Array(0);
   const reader = request.body.getReader();
   /** @type {Uint8Array[]} */
   const chunks = [];
@@ -793,7 +863,7 @@ async function readOffer(request) {
     bytes.set(chunk, at);
     at += chunk.byteLength;
   }
-  return new TextDecoder().decode(bytes);
+  return bytes;
 }
 
 /** Sends to a socket that may be closed already. @param {WebSocket} socket @param {string | ArrayBuffer} data */

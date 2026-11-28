@@ -4,8 +4,9 @@
  * (`./provider-stub.js`; step 9a part 3). It follows the shape of OpenAI's
  * calls, which the relay's observed mode will use (plan step 12), with no media:
  *
- * - `POST …/realtime/calls` with the app's offer creates a call: `201`, the
- *   call's path in `Location`, and an answer as the body;
+ * - `POST …/realtime/calls` with OpenAI's form (`sdp` and `session`) creates a
+ *   call: `201`, the call's path in `Location`, and an answer as the body. The
+ *   last call's `session` is kept (`sessions`);
  * - a WebSocket to `…/realtime?call_id=…` attaches its side channel: `101`
  *   while the call runs, `404` once it ended;
  * - `POST …/realtime/calls/{id}/hangup` hangs it up: `200`.
@@ -14,11 +15,19 @@
  * offer, `a=x-mock-<name>:<value>` (seconds, decimals allowed):
  * - `ends:S`: the call ends S seconds after it was made, and its side channel closes then;
  * - `turns:S`: every S seconds, the attached side channel reports an answer:
- *   `response.created`, a `mock.usage` event of 100 input and 20 output
- *   tokens, then `response.done`. Each answer's event id is the call's id and
- *   its number, so one answer is never counted twice, whichever side channel
+ *   `response.created`, then OpenAI's `response.done` with a usage of 100
+ *   input and 20 output tokens. Each answer's id is the call's id and its
+ *   number, so one answer is never counted twice, whichever side channel
  *   reported it.
+ *
+ * A side channel answers each `session.update` with one `session.updated`, as
+ * OpenAI answers the relay's keepalive, and keeps every message it got
+ * (`sideMessages`).
  */
+
+/** What the side channels got, oldest first, and the `session` each call was made with: for the tests. */
+export const sideMessages = [];
+export const sessions = [];
 
 /** An option's value in milliseconds: 0 when unset. @param {string} offer @param {string} name */
 function option(offer, name) {
@@ -41,8 +50,10 @@ export async function observedCall(request) {
   const url = new URL(request.url);
   const now = Date.now();
   if (request.method === "POST" && /\/realtime\/calls\/?$/u.test(url.pathname)) {
-    const offer = await request.text();
-    if (!offer.startsWith("v=")) return Response.json({ error: { message: "The offer is not SDP" } }, { status: 400 });
+    const form = await request.formData().catch(() => null);
+    const offer = form?.get("sdp");
+    if (typeof offer !== "string" || !offer.startsWith("v=")) return Response.json({ error: { message: "The offer is not SDP" } }, { status: 400 });
+    sessions.push(JSON.parse(String(form?.get("session") ?? "null")));
     // `rtc_mock_<made>_<ends>_<turns>_<random>`, times in milliseconds (0: never).
     const id = `rtc_mock_${now}_${option(offer, "ends")}_${option(offer, "turns")}_${crypto.randomUUID().slice(0, 8)}`;
     return new Response(`v=0\r\no=mock 1 1 IN IP4 0.0.0.0\r\ns=mock answer\r\nt=0 0\r\n`, {
@@ -68,6 +79,10 @@ function sideChannel(callId, call, now) {
   const [client, server] = Object.values(new WebSocketPair());
   if (client === undefined || server === undefined) throw new Error("no WebSocket pair");
   server.accept();
+  server.addEventListener("message", (event) => {
+    sideMessages.push(String(event.data));
+    if (String(event.data).includes('"session.update"')) server.send(JSON.stringify({ type: "session.updated", event_id: `event_${crypto.randomUUID().slice(0, 8)}`, session: { type: "realtime" } }));
+  });
   /** @type {ReturnType<typeof setTimeout>[]} */
   const timers = [];
   const stop = () => timers.forEach((timer) => clearTimeout(timer));
@@ -87,8 +102,7 @@ function sideChannel(callId, call, now) {
       timers.push(setTimeout(() => { // real-timer: the provider's own clock, in another Worker
         try {
           server.send(JSON.stringify({ type: "response.created" }));
-          server.send(JSON.stringify({ type: "mock.usage", event_id: `${callId}-${number}`, usage: { input_tokens: 100, output_tokens: 20 } }));
-          server.send(JSON.stringify({ type: "response.done" }));
+          server.send(JSON.stringify({ type: "response.done", response: { id: `${callId}-${number}`, usage: { input_tokens: 100, output_tokens: 20 } } }));
         } catch {
           stop();
           return;

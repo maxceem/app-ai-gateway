@@ -34,6 +34,8 @@ const geminiSlug = uniqueSlug("smoke-gemini-session");
 const gemini = { provider: "", app: "" };
 /** An app for GPT-Live on the session connection (step 9g). */
 const live = { app: "" };
+/** An app for OpenAI's observed calls on the session connection (step 12). */
+const observed = { app: "", key: "" };
 
 before(async () => {
   if (skip !== false) return;
@@ -62,6 +64,7 @@ after(async () => {
   if (gemini.app !== "") await admin("DELETE", `/v2/admin/apps/${gemini.app}?confirm=${gemini.app}`);
   if (gemini.provider !== "") await admin("DELETE", `/v2/admin/providers/${gemini.provider}`);
   if (live.app !== "") await admin("DELETE", `/v2/admin/apps/${live.app}?confirm=${live.app}`);
+  if (observed.app !== "") await admin("DELETE", `/v2/admin/apps/${observed.app}?confirm=${observed.app}`);
 });
 
 async function startSession(body: Record<string, unknown>): Promise<Response> {
@@ -376,4 +379,50 @@ test("a GPT-Live session locks its model, and books each backend call apart at t
   same(backend.cost_nano, 98_525, "the backend call's cost");
   check(voice.length > 0 && voice.every((charge) => charge.price_source === "list_rate"), "the voice time was not billed at the list price");
   check(voiceCost() >= voiceFloor, "the voice time was billed below OpenAI's seconds");
+});
+
+test("an observed OpenAI session: the relay creates the call from the app's offer, books the side channel's usage, and ends when the call ends (step 12)", { skip, timeout: 120_000 }, async () => {
+  const app = await admin("POST", "/v2/admin/apps", {
+    name: `Smoke ${slug} observed`,
+    config: {
+      authentication: { type: "api_key", end_user: { source: "header", header: "x-end-user-id" } },
+      routing: { providers: { [slug]: { operations: ["openai.realtime.calls"] } } },
+    },
+  });
+  same(app.status, 201, "the observed session app could not be made");
+  observed.app = checkId(app.body?.app?.id, "the observed session app's id");
+  observed.key = String(app.body?.api_key?.key ?? "");
+  const response = await send(`/v2/apps/${observed.app}/sessions/${slug}`, base, {
+    method: "POST",
+    headers: { authorization: `Bearer ${observed.key}`, "content-type": "application/json", "x-end-user-id": "smoke-observed-user" },
+    body: JSON.stringify({ path: "v1/realtime/calls", model: "gpt-realtime" }),
+  });
+  await expectResponse(response, 201, "starting an observed session");
+  const body = await readJson(response);
+  const sessionId = checkId(body?.session_id, "the observed session's id");
+  const relayUrl = new URL(String(body?.relay_url));
+  same(relayUrl.protocol, "https:", "an observed session's relay address");
+  same(relayUrl.host, new URL(relay).host, "the observed session's relay address is not this deployment's relay");
+  const form = new FormData();
+  form.set("sdp", "v=0\r\no=smoke 1 1 IN IP4 0.0.0.0\r\ns=smoke offer\r\nt=0 0\r\n");
+  form.set("session", JSON.stringify({ type: "realtime", instructions: "Smoke check." }));
+  const offered = await send(relayUrl.pathname, relayUrl.origin, { method: "POST", headers: { authorization: `Bearer ${String(body?.ticket)}` }, body: form });
+  await expectResponse(offered, 201, "posting the offer to the relay");
+  same(offered.headers.get("content-type"), "application/sdp", "the answer's type");
+  check((await offered.text()).startsWith("v=0"), "the relay's answer is not the provider's SDP");
+  // The mock's call reports one answer on the side channel, then ends; attaching again gets 404, and the session ends.
+  type Charge = { kind: string; input_tokens: number | null; output_tokens: number | null; cost_nano: number | null; price_source: string };
+  let charges: Charge[] = [];
+  for (let tries = 0; tries < 45; tries += 1) {
+    const listed = await admin("GET", `/v2/admin/apps/${observed.app}/charges?owner=${encodeURIComponent(sessionId)}`);
+    same(listed.status, 200, "listing the observed session's charges");
+    charges = (listed.body?.charges ?? []) as Charge[];
+    if (charges.some((charge) => (charge.input_tokens ?? 0) > 0)) break;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  same(charges.reduce((sum, charge) => sum + (charge.input_tokens ?? 0), 0), 80, "the observed session's input tokens");
+  same(charges.reduce((sum, charge) => sum + (charge.output_tokens ?? 0), 0), 10, "the observed session's output tokens");
+  for (const charge of charges.filter((c) => (c.input_tokens ?? 0) > 0)) {
+    check(charge.cost_nano === null ? charge.price_source === "unresolved" : charge.cost_nano > 0, "an observed slice with tokens was booked as free");
+  }
 });

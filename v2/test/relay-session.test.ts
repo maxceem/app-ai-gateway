@@ -333,6 +333,39 @@ describe(`an observed session through the relay's session object (step 9a part 3
     expect(await (await provider().fetch(`https://provider.test/calls/${tag}`)).json()).toEqual({ made: 1 });
   });
 
+  it("takes OpenAI's form from the app and creates the call with the session's model, then sends the side channel its keepalive (step 12)", async () => {
+    const { ticket, sessionId } = await issued("conn_observed_form", Date.now(), undefined, { capMs: 1_500 });
+    const tag = crypto.randomUUID();
+    const form = new FormData();
+    form.set("sdp", "v=0\r\na=x-mock-turns:0.4\r\n");
+    form.set("session", JSON.stringify({ type: "realtime", model: "gpt-realtime-2.1", instructions: tag }));
+    const response = await relay().fetch(`https://relay.test${SESSION_PATH}`, { method: "POST", headers: { authorization: `Bearer ${ticket}` }, body: form });
+    expect(response.status).toBe(201);
+    const sessions = (await (await provider().fetch("https://provider.test/sessions")).json()) as { instructions?: string }[];
+    // The model is the session's own; the rest of the app's settings went as they were.
+    expect(sessions.find((session) => session?.instructions === tag)).toEqual({ type: "realtime", model: "gpt-realtime", instructions: tag });
+    const seen = await closed(sessionId);
+    expect(seen.closes).toEqual([expect.objectContaining({ endReason: "time_cap" })]);
+    expect([200, 300]).toContain(inputTokens(seen));
+    expect(await (await provider().fetch("https://provider.test/side-messages")).json()).toContain('{"type":"session.update","session":{"type":"realtime"}}');
+  });
+
+  it("refuses a form with no SDP, or a session that is not a JSON object, before anything starts", async () => {
+    const { ticket } = await issued("conn_observed_bad_form", Date.now(), undefined, { capMs: 60_000 });
+    const send = (fields: Record<string, string>) => {
+      const form = new FormData();
+      for (const [name, value] of Object.entries(fields)) form.set(name, value);
+      return relay().fetch(`https://relay.test${SESSION_PATH}`, { method: "POST", headers: { authorization: `Bearer ${ticket}` }, body: form });
+    };
+    for (const fields of [{ session: "{}" }, { sdp: "v=0\r\n", session: "[1]" }, { sdp: "v=0\r\n", session: "{" }] as Record<string, string>[]) {
+      const refused = await send(fields);
+      expect(refused.status).toBe(400);
+      expect(await refused.json()).toEqual({ error: { code: "offer_invalid" } });
+    }
+    // Nothing started: the same ticket still makes the call.
+    expect((await send({ sdp: "v=0\r\na=x-mock-ends:0.5\r\n" })).status).toBe(201);
+  });
+
   it("refuses an offer that is too large, and a second one after the session started", async () => {
     const { ticket } = await issued("conn_observed_big", Date.now(), undefined, { capMs: 60_000 });
     const big = await offer(ticket, `v=0\r\n${"a=x:y\r\n".repeat(20_000)}`);

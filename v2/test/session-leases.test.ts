@@ -312,6 +312,30 @@ describe("starting a session", () => {
     expect(row?.state).toBe("starting");
   });
 
+  it("starts an observed OpenAI session at v1/realtime/calls: its ticket is observed, and the app posts its offer to the relay's https address (step 12)", async () => {
+    const { appId, slug, key } = await setup({}, ["openai.realtime.calls"]);
+    const response = await start(appId, slug, key, { path: "v1/realtime/calls", model: "gpt-realtime" });
+    expect(response.status).toBe(201);
+    const body = (await response.json()) as Record<string, string>;
+    expect(body.relay_url).toBe("https://relay.test/v2/relay/session");
+    const { payload } = parseTicket(body.ticket!)!;
+    expect(payload).toMatchObject({ operation: "openai.realtime.calls", model: "gpt-realtime", mode: "observed", slot: "conversational" });
+    // The address the key is sealed for: the call is made there, and the side channel and hang-up are on its base.
+    expect(payload.url).toBe("https://api.openai.com/v1/realtime/calls");
+    expect(adapterFor(payload)).toBe("openai");
+    // A model with no price is refused, as for a relayed session.
+    const unpriced = await start(appId, slug, key, { path: "v1/realtime/calls", model: "gpt-realtime-9" });
+    expect(unpriced.status).toBe(400);
+    expect(await unpriced.json()).toMatchObject({ error: { code: "pricing_not_configured" } });
+    // The app must allow the operation: one with only the relayed one gets no observed session, and the other way round.
+    const relayedOnly = await setup();
+    const refused = await start(relayedOnly.appId, relayedOnly.slug, relayedOnly.key, { path: "v1/realtime/calls", model: "gpt-realtime" });
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ error: { code: "path_not_allowed" } });
+    const other = await start(appId, slug, key, { path: "v1/realtime", model: "gpt-realtime" });
+    expect(other.status).toBe(403);
+  });
+
   it("starts an xAI voice session with a priced model, and refuses one with no price unless the app lists it (step 9b)", async () => {
     const { appId, slug, key } = await setup({}, ["xai.realtime"], "xai");
     const response = await start(appId, slug, key, { path: "v1/realtime", model: "grok-voice-3.0" });

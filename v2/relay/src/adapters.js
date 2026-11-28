@@ -30,6 +30,7 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   perCall?(model: string | null, settings?: { backend?: Backend }): CallMeter,
  *   callIdHeader?: string,
  *   lock?(data: string | ArrayBuffer, session?: { userId: string | null }): string | ArrayBuffer | null | { refused: string },
+ *   sideKeepalive?: string,
  * }} Adapter
  * @typedef {{ models: readonly string[], tools: readonly string[] }} Backend
  * What a session's backend may use (GPT-Live, 9g), as `open` says: the models and the tool kinds.
@@ -41,6 +42,7 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   label(event: UsageEvent): UsageEvent,
  *   estimate(): UsageEvent | null,
  *   lock(data: string | ArrayBuffer): string | ArrayBuffer | { refused: string },
+ *   otherModel?(): string | null,
  * }} CallMeter
  * `perCall`, for a provider that needs to remember something about one call
  * (OpenAI Realtime, 9e): what the session says (`see`, each provider frame
@@ -52,7 +54,9 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  * its completion event (`unfinished`: cut by the end), the model of a usage event that is not the
  * session's own (`label`: input transcription), a cut answer's estimate
  * (`estimate`, the session core's hook) and the model lock on the client's
- * frames (`lock`, before each goes to the provider). `lock` may refuse a frame
+ * frames (`lock`, before each goes to the provider). `otherModel`: a model the provider stated for the
+ * session that is not the session's own, or null (an observed call, whose client frames the relay never
+ * sees: `../index.js` logs it). `lock` may refuse a frame
  * (`{ refused: code }`): the session then ends, and the client gets `1008` with the code (GPT-Live's
  * backend rules, 9g).
  * `turn` tells when the provider starts an answer and when it is done (OpenAI's
@@ -82,6 +86,8 @@ export const USAGE_MEASURES = ["input_tokens", "output_tokens", "cached_input_to
  *   remembered (ElevenLabs): the frame, changed or not, null to drop it, or `{ refused: code }` to end the
  *   session, as a call's meter may (ElevenLabs agents' overrides, 11a). `session.userId` is the end user's id
  *   as the provider gets it, from the ticket (`providerUserId`), or null: the gateway decided it.
+ * - `sideKeepalive`: for an observed call, the message its side channel gets every minute so the provider
+ *   keeps it open (OpenAI's, plan section 5): it must change nothing and bill nothing.
  */
 
 /**
@@ -505,6 +511,9 @@ const OPENAI = {
     return { id: id.slice(0, 128), measures };
   },
   perCall: (model) => openAiCall(model),
+  // Only `type`: it creates no answer and no item, bills nothing, and the call's settings stay as they are
+  // (T9, T21). OpenAI answers it with one `session.updated`, which the device gets too (T22).
+  sideKeepalive: '{"type":"session.update","session":{"type":"realtime"}}',
 };
 
 /**
@@ -569,6 +578,8 @@ function openAiCall(model) {
   let format = "pcm";
   /** @type {string | null} */
   let transcribedBy = null;
+  /** @type {string | null} The model OpenAI last stated for the session. */
+  let stated = null;
   let open = 0;
   let chars = 0;
   let finishedCount = 0;
@@ -606,6 +617,7 @@ function openAiCall(model) {
         const session = /** @type {{ session?: Record<string, any> } | null} */ (parsed(data))?.session;
         if (typeof session !== "object" || session === null) return null;
         format = outputFormat(session) ?? format;
+        if (typeof session.model === "string") stated = session.model;
         const named = transcriptionModel(session);
         if (named !== undefined) transcribedBy = named;
       } else if (type === "input_audio_buffer.committed") {
@@ -620,6 +632,9 @@ function openAiCall(model) {
     },
     settled(key) {
       writing.delete(key);
+    },
+    otherModel() {
+      return model !== null && stated !== null && stated !== model ? stated : null;
     },
     pending() {
       return open > 0 || pending.size > 0 || writing.size > 0;
