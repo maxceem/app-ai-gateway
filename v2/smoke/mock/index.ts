@@ -640,15 +640,21 @@ async function answer(request: Request): Promise<Response> {
   if (request.method === "GET" && record !== null) {
     const id = decodeURIComponent(record[1]!);
     const usd = Number(/^mock_usd_([0-9.]{1,12})_/u.exec(id)?.[1] ?? "0.001");
-    // Wrapped in `request`, as Deepgram's reference shows.
+    // The shape of Deepgram's real record: `response` at the top level. A key that can't read Deepgram's
+    // billing gets no `usd`; the mock always sends one, as a key that can may get it.
     return Response.json({
-      request: {
-        request_id: id,
-        project_uuid: MOCK_PROJECT,
-        created: new Date().toISOString(),
-        path: "/v1/listen",
-        response: { code: 101, completed: new Date().toISOString(), details: { usd: Number.isFinite(usd) ? usd : 0.001, duration: 1, channels: 1 } },
+      request_id: id,
+      project_uuid: MOCK_PROJECT,
+      created: new Date().toISOString(),
+      path: "/v1/listen",
+      api_key_id: "mock-key",
+      response: {
+        details: { usd: Number.isFinite(usd) ? usd : 0.001, duration: 1, total_audio: 1, channels: 1, streams: 1, tier: "nova-3", method: "streaming" },
+        code: 101,
+        completed: new Date().toISOString(),
+        deployment: "hosted:us",
       },
+      callback: null,
     });
   }
   // A path no provider declares, for passthrough (step 5): any method,

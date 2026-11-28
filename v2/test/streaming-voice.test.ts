@@ -330,11 +330,47 @@ function deepgramApi(record: () => Answer, projects: () => Answer = () => ({ sta
   return asked;
 }
 
-/** A completed request record, wrapped in `request` as Deepgram's reference shows. */
-const finalRecord = (usd: number): Answer => ({
-  status: 200,
-  body: { request: { request_id: "dg-req-1", created: "2026-11-28T10:00:00Z", path: "/v1/listen", response: { code: 101, completed: "2026-11-28T10:00:31Z", details: { usd, duration: 30 } } } },
+/**
+ * Deepgram's real record of a completed stream, as a `member` key reads it: `response` at the top level, and
+ * no `usd` (a real run, research T38: `deepgram-record.sanitized.json`, its ids replaced).
+ */
+const realRecord = () => ({
+  request_id: "dg-req-1",
+  project_uuid: "proj-1",
+  created: "2026-11-28T01:38:21.627126Z",
+  path: "/v1/listen?encoding=linear16&sample_rate=16000&channels=1&punctuate=true&interim_results=false&model=nova-3",
+  api_key_id: "key-1",
+  response: {
+    details: {
+      duration: 24.093,
+      total_audio: 24.093,
+      channels: 1,
+      streams: 1,
+      tier: "nova-3",
+      metadata: {},
+      models: ["model-1"],
+      method: "streaming",
+      tags: [],
+      features: ["endpointing", "punctuate"],
+      config: {},
+    } as Record<string, unknown>,
+    token_details: [],
+    code: 101,
+    completed: "2026-11-28T01:38:44.129769Z",
+    deployment: "hosted:us",
+  } as Record<string, unknown>,
+  callback: null,
 });
+
+/** The real record with a dollar figure, as a key that may read Deepgram's billing may see it. */
+function recordWithUsd(usd: number) {
+  const record = realRecord();
+  record.response.details = { ...(record.response.details as object), usd };
+  return record;
+}
+
+/** A completed request record with its dollar figure. */
+const finalRecord = (usd: number): Answer => ({ status: 200, body: recordWithUsd(usd) });
 
 async function settlementOf(sessionId: string) {
   return ledger().prepare("SELECT settlement, session_total_nano FROM session WHERE id = ?").bind(sessionId).first<{ settlement: string; session_total_nano: number | null }>();
@@ -346,15 +382,38 @@ async function sessionCost(sessionId: string): Promise<number> {
 }
 
 describe(`Deepgram's request lookup after a stream (step 10a, split keys ${splitKeysOn ? "on" : "off"})`, () => {
-  it("reads only a completed record's dollar figure as final", () => {
-    expect(recordFigure(finalRecord(0.0024).body)).toEqual({ kind: "final", usd: 0.0024 });
-    expect(recordFigure({ request: { response: { details: { usd: 0.0024 } } } })).toEqual({ kind: "pending" });
-    expect(recordFigure({ request: { response: { completed: "2026-11-28T10:00:31Z", details: {} } } })).toEqual({ kind: "pending" });
+  it("reads a completed record, at the top level or wrapped in `request`: its dollar figure, or that it has none", () => {
+    // The real record, as Deepgram sent it: complete, without a dollar figure.
+    expect(recordFigure(realRecord())).toEqual({ kind: "no_figure" });
+    expect(recordFigure(recordWithUsd(0.0024))).toEqual({ kind: "final", usd: 0.0024 });
+    // The shape one of Deepgram's reference pages shows, wrapped in `request`.
+    expect(recordFigure({ request: recordWithUsd(0.0024) })).toEqual({ kind: "final", usd: 0.0024 });
+    expect(recordFigure({ request: realRecord() })).toEqual({ kind: "no_figure" });
     // A negative figure is a completed one: the caller keeps the estimate for it (Sol, #273 round 4).
-    expect(recordFigure({ request: { response: { completed: "2026-11-28T10:00:31Z", details: { usd: -1 } } } })).toEqual({ kind: "final", usd: -1 });
-    // The result is under `request.response`: one at the top level is not Deepgram's shape.
-    expect(recordFigure({ response: { completed: "2026-11-28T10:00:31Z", details: { usd: 0.0024 } } })).toEqual({ kind: "pending" });
+    expect(recordFigure(recordWithUsd(-1))).toEqual({ kind: "final", usd: -1 });
+    // Not completed yet, with a figure or without.
+    const notDone = recordWithUsd(0.0024);
+    delete notDone.response.completed;
+    expect(recordFigure(notDone)).toEqual({ kind: "pending" });
+    expect(recordFigure({ ...realRecord(), response: { ...realRecord().response, completed: "" } })).toEqual({ kind: "pending" });
+    expect(recordFigure({ request_id: "dg-req-1" })).toEqual({ kind: "pending" });
     expect(recordFigure(null)).toEqual({ kind: "pending" });
+  });
+
+  it("keeps the estimate at once on a completed record without a dollar figure, logged at info, not warn", async () => {
+    const lines: { level: string; line: string }[] = [];
+    for (const method of ["log", "warn", "error"] as const) vi.spyOn(console, method).mockImplementation((line: unknown) => void lines.push({ level: method, line: String(line) }));
+    const { sessionId, endedAt } = await closedStream();
+    const asked = deepgramApi(() => ({ status: 200, body: realRecord() }));
+    await runSweep(env, ledger(), { now: endedAt + 31_000 });
+    expect(await settlementOf(sessionId)).toEqual({ settlement: "estimate_kept", session_total_nano: null });
+    // The slice stays as booked: 30 s at $0.0048 a minute.
+    expect(await sessionCost(sessionId)).toBe(2_400_000);
+    // One read, and no retry.
+    expect(asked.map((one) => one.url)).toEqual(["https://api.deepgram.com/v1/projects", "https://api.deepgram.com/v1/projects/proj-1/requests/dg-req-1"]);
+    expect(await lookupRow(sessionId)).toBeNull();
+    const lookupLines = lines.filter((one) => one.line.includes("session_lookup_"));
+    expect(lookupLines).toEqual([{ level: "log", line: expect.stringContaining("session_lookup_no_figure") }]);
   });
 
   it("is moved to the stream's end by close, and settles the session to Deepgram's dollars, minus the slice already booked", async () => {
@@ -383,7 +442,9 @@ describe(`Deepgram's request lookup after a stream (step 10a, split keys ${split
     await runSweep(env, ledger(), { now: endedAt + 31_000 });
     expect(await lookupRow(sessionId)).toMatchObject({ tries: 1, last_error: "record not ready", due_at: endedAt + 31_000 + 60_000 });
     // There, but not complete yet.
-    answer = { status: 200, body: { request: { request_id: "dg-req-1", response: { details: { usd: 0.003 } } } } };
+    const notDone = recordWithUsd(0.003);
+    delete notDone.response.completed;
+    answer = { status: 200, body: notDone };
     await runSweep(env, ledger(), { now: endedAt + 91_000 });
     expect(await lookupRow(sessionId)).toMatchObject({ tries: 2, last_error: "record not complete", due_at: endedAt + 91_000 + 120_000 });
     expect(await settlementOf(sessionId)).toMatchObject({ settlement: "open", session_total_nano: null });
