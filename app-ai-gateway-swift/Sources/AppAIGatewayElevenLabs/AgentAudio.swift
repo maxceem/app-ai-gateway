@@ -28,6 +28,32 @@ protocol AgentAudio: AnyObject, Sendable {
     @discardableResult func flush() -> TimeInterval
     /// Stops the engine and lets the audio session go.
     func stop()
+    /// Ends the current run at once, from anywhere: its callbacks still
+    /// waiting do nothing. The owner calls it when it is let go, before
+    /// `stop()` runs on the main actor.
+    nonisolated func endRun()
+}
+
+/// The number of the audio's current run, set on start and changed on stop
+/// or release. A callback done later, on the main actor, does its work only
+/// if the run it was registered under is still the current one: so it never
+/// restarts audio after a release, or acts on a newer run after a quick stop
+/// and start.
+final class AudioRun: @unchecked Sendable {
+    private let lock = NSLock()
+    private var number = 0
+
+    /// A new run, or the end of the current one. Answers the new number.
+    @discardableResult func next() -> Int { lock.withLock { number += 1; return number } }
+    func isCurrent(_ run: Int) -> Bool { lock.withLock { number == run } }
+
+    /// Runs `work` on the main actor later, only if `run` is still current then.
+    func later(_ run: Int, _ work: @escaping @MainActor () -> Void) {
+        Task { @MainActor in
+            guard self.isCurrent(run) else { return }
+            work()
+        }
+    }
 }
 
 /// The audio of T17a's test app, which worked well on an iPhone:
@@ -58,6 +84,7 @@ final class AgentAudioEngine: AgentAudio {
     private var generation = 0
     private var queuedFrames = 0
     private var observers: [NSObjectProtocol] = []
+    private let run = AudioRun()
     /// The running engines, all on iOS's one audio session. It is let go only
     /// when the last one stops: a client released after a new one started
     /// (its teardown runs later, on the main actor) must not stop the new
@@ -87,7 +114,7 @@ final class AgentAudioEngine: AgentAudio {
             throw error
         }
         running = true
-        observe()
+        observe(run: run.next())
     }
 
     func use(inputRate: Double, outputRate: Double) {
@@ -133,8 +160,13 @@ final class AgentAudioEngine: AgentAudio {
         return queued
     }
 
+    nonisolated func endRun() {
+        run.next()
+    }
+
     func stop() {
         guard running else { return }
+        run.next()
         running = false
         generation += 1
         queuedFrames = 0
@@ -235,7 +267,10 @@ final class AgentAudioEngine: AgentAudio {
         if queuedFrames == 0 { onDrained?() }
     }
 
-    private func observe() {
+    /// Each callback holds the engine weakly and acts only while `current` is
+    /// the engine's run.
+    private func observe(run current: Int) {
+        let run = run
         let center = NotificationCenter.default
         // AVFoundation posts these on its own threads, and its queue waits for
         // the observer to return. Stopping or rebuilding the engine inside it
@@ -244,8 +279,8 @@ final class AgentAudioEngine: AgentAudio {
         // Any engine: after a media services reset the engine is a new one.
         observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: nil) { [weak self] note in
             let source = (note.object as AnyObject?).map(ObjectIdentifier.init)
-            Task { @MainActor in
-                guard let self, self.running, source == ObjectIdentifier(self.engine) else { return }
+            run.later(current) {
+                guard let self, source == ObjectIdentifier(self.engine) else { return }
                 self.rebuild()
             }
         })
@@ -253,16 +288,16 @@ final class AgentAudioEngine: AgentAudio {
         let session = AVAudioSession.sharedInstance()
         observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: session, queue: nil) { [weak self] note in
             let ended = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) == AVAudioSession.InterruptionType.ended.rawValue
-            Task { @MainActor in
-                guard ended, let self, self.running else { return }
+            run.later(current) {
+                guard ended, let self else { return }
                 // Even without "should resume": the call is still on (T17b).
                 try? AVAudioSession.sharedInstance().setActive(true)
                 self.rebuild()
             }
         })
         observers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: session, queue: nil) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, self.running else { return }
+            run.later(current) {
+                guard let self else { return }
                 try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: Self.categoryOptions)
                 try? AVAudioSession.sharedInstance().setActive(true)
                 self.rebuild(fresh: true)
@@ -273,7 +308,7 @@ final class AgentAudioEngine: AgentAudio {
         // thread, and no audio queue waits for it, so it runs here at once.
         observers.append(center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.running, !self.engine.isRunning else { return }
+                guard let self, run.isCurrent(current), !self.engine.isRunning else { return }
                 try? AVAudioSession.sharedInstance().setActive(true)
                 self.rebuild()
             }

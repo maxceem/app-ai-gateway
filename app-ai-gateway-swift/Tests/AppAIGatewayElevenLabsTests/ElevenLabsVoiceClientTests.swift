@@ -78,6 +78,11 @@ final class FakeAudio: AgentAudio {
     var muted = false
     var running = false
     var starts = 0
+    /// The same run gate as the real engine's.
+    let run = AudioRun()
+    private var current = 0
+    /// Callbacks that did their work.
+    var fired = 0
     var rates: (input: Double, output: Double) = (16000, 16000)
     /// The first sample of each chunk played, in order.
     var played: [Int16] = []
@@ -91,6 +96,12 @@ final class FakeAudio: AgentAudio {
     func start() throws {
         starts += 1
         running = true
+        current = run.next()
+    }
+    nonisolated func endRun() { run.next() }
+    /// A notice whose work waits for the main actor, as the real engine's do.
+    func queueCallback() {
+        run.later(current) { [weak self] in self?.fired += 1 }
     }
     func use(inputRate: Double, outputRate: Double) { rates = (inputRate, outputRate) }
     func play(pcm16: Data) {
@@ -105,6 +116,7 @@ final class FakeAudio: AgentAudio {
     func stop() {
         running = false
         queuedSeconds = 0
+        run.next()
     }
     /// The microphone captures one chunk of speech. Muted, it gives silence,
     /// as the real input node does.
@@ -285,6 +297,32 @@ struct ElevenLabsVoiceClientTests {
         audio.rebuild()
         #expect(!audio.running)
         #expect(!session.messages.contains { $0.contains("did not hear the rest") })
+    }
+
+    @Test
+    func aCallbackQueuedBeforeAStopAndStartDoesNothing() async throws {
+        _ = try await started()
+        // A callback on the current run does its work.
+        audio.queueCallback()
+        #expect(await eventually { audio.fired == 1 })
+        audio.queueCallback()
+        client.end()
+        _ = try await connected { try await client.start() }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(audio.fired == 1)
+        #expect(audio.running)
+    }
+
+    @Test
+    func aCallbackQueuedBeforeReleaseDoesNothing() async throws {
+        let audio = FakeAudio()
+        var client: ElevenLabsVoiceClient? = ElevenLabsVoiceClient(audio: audio) { _ in FakeSession(id: "s1") }
+        try await client?.start()
+        audio.queueCallback()
+        client = nil
+        #expect(await eventually { !audio.running })
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(audio.fired == 0)
     }
 
     @Test
