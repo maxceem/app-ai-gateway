@@ -243,10 +243,9 @@ Start a new session then.
   ends such a session with its own error. The session is charged by the
   characters of the text you send, as a text-to-speech call is.
 - **Deepgram speech to text.** Send the audio as binary messages, and
-  Deepgram's own `KeepAlive`, `Finalize` and `CloseStream`. The session is
-  charged by the audio Deepgram reports it heard, or by the time since your
-  first audio when that is longer. That is the final charge: it is not
-  corrected after the session ends.
+  Deepgram's own `KeepAlive`, `Finalize` and `CloseStream`. The gateway counts
+  the session's time as the longer of two: the audio Deepgram reports it
+  heard, and the time from your first audio to the end of the stream.
 
 ## ElevenLabs agents
 

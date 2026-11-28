@@ -24,9 +24,7 @@
  *   does not report, and custom topics and intents have no published rate:
  *   a request naming one is served, billed at the model's rate as an
  *   estimate, and logged. So is a priced option on a customer's own rate
- *   without it. Deepgram's own dollar figure per request
- *   (`GET v1/projects/{p}/requests/{id}`) is not read: a key without access
- *   to Deepgram's billing gets none, and the minutes already match (10a).
+ *   without it.
  * - Diarization is included in the prerecorded rate.
  * - Live streaming (`wss://.../v1/listen`) is a session, built with the relay.
  */
