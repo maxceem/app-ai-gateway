@@ -286,9 +286,10 @@ through the relay.
 - **If ElevenLabs refuses the call** (a deleted agent, say), the session never
   starts: `4000 provider_unavailable`.
 - **ElevenLabs' own limits apply.** Your ElevenLabs plan allows a number of calls
-  at once (6 on Starter). Calls above it still run, and ElevenLabs charges
-  their minutes at twice its usual rate. An app may open 10 voice sessions at
-  once by default.
+  at once across its workspace (6 on Starter). With the agent's burst pricing
+  on, calls above it still run, and ElevenLabs charges their minutes at twice
+  its usual rate. An app may open 10 voice sessions at once by default. See
+  [Voice in an iOS app](#voice-in-an-ios-app).
 - A few minutes after a call ends, its charge is corrected to ElevenLabs' own
   figure for the conversation, when the connection's key may read the agent's
   conversations.
@@ -331,6 +332,11 @@ for await event in voice.events {
 }
 ```
 
+A new greeting with `firstMessage` works only if the agent allows it. In
+ElevenLabs, open the agent's **Security** settings and turn on the override
+for the **first message**. Without it, ElevenLabs refuses the new
+conversation, so the first try to start again after a lost connection fails.
+
 Use one client for one call. Call `voice.end()` to hang up. What the client
 does for you:
 
@@ -365,11 +371,16 @@ the user push-to-talk or a mute button: set `isMicrophoneMuted`. The client
 then sends silence, so ElevenLabs still sees the user's turn end.
 
 **Mind ElevenLabs' limit on calls at once.** Your ElevenLabs plan allows a
-number of calls at once, 6 on Starter. ElevenLabs still serves calls above it
-as bursts, and charges their minutes at twice its usual rate. An app may open
-10 voice sessions at once by default. If bursts should not happen, set
-`limits.per_app.sessions.conversational` in the app's
-[settings](/applications/limits) to your ElevenLabs plan's number.
+number of calls at once, 6 on Starter. The limit is for the whole ElevenLabs
+workspace: every agent, and every app that uses the same workspace, shares
+it. Above it, what happens depends on the agent's burst pricing setting in
+ElevenLabs. With burst pricing on, ElevenLabs still serves the extra calls and
+charges their minutes at twice its usual rate. With it off, ElevenLabs refuses
+them. An app may open 10 voice sessions at once by default. You can lower
+that with `limits.per_app.sessions.conversational` in the app's
+[settings](/applications/limits). That caps only this app's share of the
+workspace's calls: calls from your other apps and agents still count toward
+ElevenLabs' limit.
 
 **If the voice client doesn't suit your app,** use ElevenLabs' official SDK
 over WebRTC instead. List ElevenLabs' token path,

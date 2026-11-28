@@ -67,7 +67,8 @@ public final class ElevenLabsVoiceClient {
 
     /// How a conversation ended.
     public struct Ending: Sendable, Equatable {
-        /// The relay's close code, or 0 when the link was lost.
+        /// The relay's close code, 0 when the link was lost, or 1003 when the
+        /// agent's audio format can't be played.
         public let code: Int
         public let reason: String
 
@@ -134,7 +135,9 @@ public final class ElevenLabsVoiceClient {
     /// Mutes the microphone, for push-to-talk or a mute button. Other people
     /// talking near the phone keep the user's turn open on ElevenLabs' side
     /// (T17b). Silence is sent instead, so ElevenLabs still sees a turn end.
-    public var isMicrophoneMuted = false
+    public var isMicrophoneMuted = false {
+        didSet { audio.muted = isMicrophoneMuted }
+    }
 
     private nonisolated let continuation: AsyncStream<Event>.Continuation
     private let open: @MainActor (_ takesOver: String?) async throws -> any AgentSession
@@ -177,14 +180,18 @@ public final class ElevenLabsVoiceClient {
         self.open = open
         (events, continuation) = AsyncStream.makeStream(of: Event.self)
         audio.onDrained = { [weak self] in self?.stopAudioIfIdle() }
-        audio.onLostAudio = { [weak self] in self?.cutAnswer() }
+        audio.onLostAudio = { [weak self] lost in self?.cutAnswer(lost: lost) }
         let mic = audio.mic
         Task { [weak self] in
             for await chunk in mic { self?.micChunk(chunk) }
         }
     }
 
+    /// A client let go during a call ends it: otherwise the send task would
+    /// keep the session, and the relay the call.
     deinit {
+        outbox?.finish()
+        if let session { Task { await session.close() } }
         continuation.finish()
     }
 
@@ -357,7 +364,7 @@ public final class ElevenLabsVoiceClient {
             let metadata = body("conversation_initiation_metadata_event")
             guard let input = Self.pcmRate(metadata["user_input_audio_format"]),
                   let output = Self.pcmRate(metadata["agent_output_audio_format"])
-            else { return fail("unsupported_audio_format") }
+            else { return fail(code: 1003, reason: "unsupported_audio_format") }
             audio.use(inputRate: input, outputRate: output)
             conversationStarted = true
             micOn = true
@@ -405,19 +412,22 @@ public final class ElevenLabsVoiceClient {
 
     /// Clears the agent's queued audio and drops the rest of its answer. If
     /// any was lost, the agent is told: otherwise it believes the user heard it all (T17b).
-    private func cutAnswer() {
-        let lost = audio.flush()
+    /// `lost` is what a rebuild of the audio engine already threw away.
+    private func cutAnswer(lost alreadyLost: TimeInterval = 0) {
+        let lost = max(alreadyLost, audio.flush())
         if let lastAudioID { dropBelow = max(dropBelow, lastAudioID + 1) }
         if lost > 0, conversationStarted {
             sendContextualUpdate("The user did not hear the rest of your last answer.")
         }
     }
 
-    private func fail(_ reason: String) {
+    /// Ends the conversation for a reason that trying again can't fix, so
+    /// `connectionLost` is false.
+    private func fail(code: Int, reason: String) {
         let session = self.session
         generation += 1
         if let session { Task { await session.close() } }
-        conversationEnded(Ending(code: 0, reason: reason))
+        conversationEnded(Ending(code: code, reason: reason))
     }
 
     private func conversationEnded(_ ending: Ending) {

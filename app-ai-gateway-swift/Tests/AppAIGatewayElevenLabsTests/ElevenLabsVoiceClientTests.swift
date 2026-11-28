@@ -1,10 +1,27 @@
 import AppAIGateway
+@preconcurrency import AVFoundation
 import Foundation
 import Testing
 @testable import AppAIGatewayElevenLabs
 
+/// Whether a session was closed and freed, read after the session is gone.
+final class Probe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _closed = false
+    private var _freed = false
+    var closed: Bool {
+        get { lock.withLock { _closed } }
+        set { lock.withLock { _closed = newValue } }
+    }
+    var freed: Bool {
+        get { lock.withLock { _freed } }
+        set { lock.withLock { _freed = newValue } }
+    }
+}
+
 /// A pretend session: the test hands it the relay's events and reads what the client sent.
 final class FakeSession: AgentSession, @unchecked Sendable {
+    var probe: Probe?
     let sessionID: String
     let events: AsyncStream<LiveSession.Event>
     private let input: AsyncStream<LiveSession.Event>.Continuation
@@ -27,7 +44,11 @@ final class FakeSession: AgentSession, @unchecked Sendable {
 
     func start() async { lock.withLock { _started = true } }
     func send(text: String) async { lock.withLock { _sent.append(text) } }
-    func close() async { lock.withLock { _closed = true } }
+    func close() async {
+        lock.withLock { _closed = true }
+        probe?.closed = true
+    }
+    deinit { probe?.freed = true }
 
     func deliver(_ event: LiveSession.Event) { input.yield(event) }
     func deliver(_ text: String) { input.yield(.text(text)) }
@@ -54,7 +75,8 @@ final class FakeAudio: AgentAudio {
     let mic: AsyncStream<Data>
     let micIn: AsyncStream<Data>.Continuation
     var onDrained: (() -> Void)?
-    var onLostAudio: (() -> Void)?
+    var onLostAudio: ((TimeInterval) -> Void)?
+    var muted = false
     var running = false
     var starts = 0
     var rates: (input: Double, output: Double) = (16000, 16000)
@@ -88,6 +110,14 @@ final class FakeAudio: AgentAudio {
     /// The queue played to its end.
     func drain() {
         queuedSeconds = 0
+        onDrained?()
+    }
+    /// What the real engine's rebuild does: the queue is cleared, then the
+    /// client is told what was lost, then that the queue is empty.
+    func rebuild() {
+        let lost = queuedSeconds
+        queuedSeconds = 0
+        if lost > 0 { onLostAudio?(lost) }
         onDrained?()
     }
 }
@@ -216,11 +246,40 @@ struct ElevenLabsVoiceClientTests {
         let session = try await started()
         session.audio(id: 2, mark: 2)
         #expect(await eventually { audio.played == [2] })
-        audio.onLostAudio?()
+        audio.rebuild()
         session.audio(id: 2, mark: 20)
         session.audio(id: 3, mark: 3)
         #expect(await eventually { audio.played == [2, 3] })
         #expect(session.messages.contains { $0.contains("did not hear the rest") })
+        #expect(audio.running)
+    }
+
+    @Test
+    func aRebuildWhileAGoodbyePlaysOutStopsTheAudio() async throws {
+        let session = try await started()
+        session.audio(id: 1)
+        #expect(await eventually { audio.played.count == 1 })
+        session.end(code: 1000, reason: "provider_closed")
+        #expect(await eventually { !client.isActive })
+        #expect(audio.running)
+        audio.rebuild()
+        #expect(!audio.running)
+        #expect(!session.messages.contains { $0.contains("did not hear the rest") })
+    }
+
+    @Test
+    func aClientLetGoDuringACallClosesAndFreesItsSession() async throws {
+        let probe = Probe()
+        let audio = FakeAudio()
+        var client: ElevenLabsVoiceClient? = ElevenLabsVoiceClient(audio: audio) { _ in
+            let session = FakeSession(id: "s1")
+            session.probe = probe
+            return session
+        }
+        try await client?.start()
+        #expect(client?.isActive == true)
+        client = nil
+        #expect(await eventually { probe.closed && probe.freed })
     }
 
     @Test
@@ -330,6 +389,7 @@ struct ElevenLabsVoiceClientTests {
     func aMutedMicrophoneSendsSilence() async throws {
         let session = try await started()
         client.isMicrophoneMuted = true
+        #expect(audio.muted)
         audio.micIn.yield(Data(repeating: 7, count: 3200))
         let silence = #"{"user_audio_chunk":""# + Data(count: 3200).base64EncodedString() + #""}"#
         #expect(await eventually { session.sent.last == silence })
@@ -357,8 +417,16 @@ struct ElevenLabsVoiceClientTests {
     func anAudioFormatItCannotPlayEndsTheConversation() async throws {
         try await client.start()
         let session = opened.sessions[0]
+        var events = client.events.makeAsyncIterator()
         session.connect(output: "ulaw_8000")
         #expect(await eventually { session.closed && !client.isActive })
+        var ending: ElevenLabsVoiceClient.Ending?
+        while let event = await events.next() {
+            if case .ended(let value) = event { ending = value; break }
+        }
+        // Trying again can't help: an app that starts again on a lost connection must not loop.
+        #expect(ending == .init(code: 1003, reason: "unsupported_audio_format"))
+        #expect(ending?.connectionLost == false)
         #expect(ElevenLabsVoiceClient.pcmRate("pcm_24000") == 24000)
         #expect(ElevenLabsVoiceClient.pcmRate("ulaw_8000") == nil)
     }
@@ -381,5 +449,41 @@ struct ElevenLabsVoiceClientTests {
         #expect(!Ending(code: 1000, reason: "time_cap").connectionLost)
         #expect(!Ending(code: 1000, reason: "budget_stop").connectionLost)
         #expect(!Ending(code: 1008, reason: "override_not_allowed").connectionLost)
+    }
+}
+
+/// The real resampler, fed made-up microphone buffers.
+struct MicResamplerTests {
+    private static func buffer(_ value: Float, frames: Int) -> AVAudioPCMBuffer {
+        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames))!
+        buffer.frameLength = AVAudioFrameCount(frames)
+        for i in 0..<frames { buffer.floatChannelData![0][i] = value }
+        return buffer
+    }
+
+    @Test
+    func speechCapturedWhileMutedIsNeverSent() async throws {
+        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
+        let (stream, out) = AsyncStream.makeStream(of: Data.self)
+        let mute = MicMute()
+        let resampler = try #require(MicResampler(from: format, to: format, out: out, mute: mute))
+        // Half a chunk of speech, then muted: the partial chunk is cleared, not finished with silence.
+        resampler.take(Self.buffer(0.5, frames: 800))
+        mute.value = true
+        resampler.take(Self.buffer(0.5, frames: 1600))
+        // Unmuted mid-chunk: the muted part is cleared too.
+        resampler.take(Self.buffer(0.5, frames: 800))
+        mute.value = false
+        resampler.take(Self.buffer(0.25, frames: 1600))
+        out.finish()
+        var chunks: [[Int16]] = []
+        var iterator = stream.makeAsyncIterator()
+        while let data = await iterator.next() {
+            chunks.append(data.withUnsafeBytes { Array($0.bindMemory(to: Int16.self)).map { Int16(littleEndian: $0) } })
+        }
+        #expect(chunks.count == 2)
+        #expect(chunks[0].allSatisfy { $0 == 0 })
+        #expect(chunks[1].allSatisfy { $0 == Int16(0.25 * 32767) })
     }
 }

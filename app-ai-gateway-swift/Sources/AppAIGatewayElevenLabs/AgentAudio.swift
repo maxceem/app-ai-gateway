@@ -10,8 +10,12 @@ protocol AgentAudio: AnyObject {
     var queuedSeconds: TimeInterval { get }
     /// Called when the queue has played to its end.
     var onDrained: (() -> Void)? { get set }
-    /// Called when a rebuild of the audio engine threw queued audio away.
-    var onLostAudio: (() -> Void)? { get set }
+    /// Called with the seconds of queued audio a rebuild of the audio engine
+    /// threw away. The queue is already empty then.
+    var onLostAudio: ((TimeInterval) -> Void)? { get set }
+    /// Silences the microphone before its samples are chunked, so no speech
+    /// captured while muted is sent.
+    var muted: Bool { get set }
     /// Starts the audio session and the engine. Does nothing when they run.
     func start() throws
     /// The rates the conversation uses, from ElevenLabs' `pcm_…` formats.
@@ -36,7 +40,13 @@ final class AgentAudioEngine: AgentAudio {
     let mic: AsyncStream<Data>
     private let micOut: AsyncStream<Data>.Continuation
     var onDrained: (() -> Void)?
-    var onLostAudio: (() -> Void)?
+    var onLostAudio: ((TimeInterval) -> Void)?
+    var muted: Bool {
+        get { mute.value }
+        set { mute.value = newValue }
+    }
+    /// Read by the audio thread.
+    private let mute = MicMute()
 
     private var engine = AVAudioEngine()
     private var player = AVAudioPlayerNode()
@@ -162,7 +172,7 @@ final class AgentAudioEngine: AgentAudio {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: inputRate, channels: 1, interleaved: false),
-              let resampler = MicResampler(from: format, to: target, out: micOut)
+              let resampler = MicResampler(from: format, to: target, out: micOut, mute: mute)
         else { throw AgentAudioError.microphoneFormat }
         input.installTap(onBus: 0, bufferSize: 1024, format: format, block: resampler.tap())
     }
@@ -170,7 +180,7 @@ final class AgentAudioEngine: AgentAudio {
     /// The engine again, on the same nodes, or on new ones after the media
     /// services were reset. Queued audio is lost: the client is told.
     private func rebuild(fresh: Bool = false) {
-        let lost = flush() > 0
+        let lost = flush()
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         if fresh {
@@ -182,7 +192,10 @@ final class AgentAudioEngine: AgentAudio {
         } catch {
             // The next configuration change or the end of an interruption tries again.
         }
-        if lost { onLostAudio?() }
+        if lost > 0 { onLostAudio?(lost) }
+        // The playback callbacks of the lost audio never come: the queue is
+        // empty now, which may be the end of a goodbye.
+        onDrained?()
     }
 
     private func played(_ count: Int, of current: Int) {
@@ -228,21 +241,34 @@ enum AgentAudioError: Error {
     case microphoneFormat
 }
 
+/// The mute switch, set on the main thread and read on the audio thread.
+final class MicMute: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value = false
+    var value: Bool {
+        get { lock.withLock { _value } }
+        set { lock.withLock { _value = newValue } }
+    }
+}
+
 /// Turns the microphone's buffers into 100 ms PCM16 chunks at the agent's
 /// rate. It runs on the audio thread only, one per tap.
 final class MicResampler: @unchecked Sendable {
     private let converter: AVAudioConverter
     private let target: AVAudioFormat
     private let out: AsyncStream<Data>.Continuation
+    private let mute: MicMute
+    private var muted = false
     private var samples: [Float] = []
     private let chunk: Int
 
-    init?(from source: AVAudioFormat, to target: AVAudioFormat, out: AsyncStream<Data>.Continuation) {
+    init?(from source: AVAudioFormat, to target: AVAudioFormat, out: AsyncStream<Data>.Continuation, mute: MicMute) {
         guard let converter = AVAudioConverter(from: source, to: target) else { return nil }
         if source.channelCount > 1 { converter.channelMap = [0] }
         self.converter = converter
         self.target = target
         self.out = out
+        self.mute = mute
         chunk = Int(target.sampleRate / 10)
     }
 
@@ -251,7 +277,7 @@ final class MicResampler: @unchecked Sendable {
         { [self] buffer, _ in take(buffer) }
     }
 
-    private func take(_ buffer: AVAudioPCMBuffer) {
+    func take(_ buffer: AVAudioPCMBuffer) {
         guard buffer.frameLength > 0 else { return }
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * target.sampleRate / buffer.format.sampleRate + 64)
         guard let converted = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return }
@@ -267,7 +293,17 @@ final class MicResampler: @unchecked Sendable {
             return buffer
         }
         guard status != .error, let floats = converted.floatChannelData?[0] else { return }
-        samples.append(contentsOf: UnsafeBufferPointer(start: floats, count: Int(converted.frameLength)))
+        // A partial chunk never mixes muted and unmuted audio.
+        let muted = mute.value
+        if muted != self.muted {
+            self.muted = muted
+            samples.removeAll()
+        }
+        if muted {
+            samples.append(contentsOf: repeatElement(0, count: Int(converted.frameLength)))
+        } else {
+            samples.append(contentsOf: UnsafeBufferPointer(start: floats, count: Int(converted.frameLength)))
+        }
         while samples.count >= chunk {
             var data = Data(count: chunk * 2)
             data.withUnsafeMutableBytes { raw in
