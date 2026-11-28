@@ -560,6 +560,10 @@ const mock = {
 async function answer(request: Request): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === "/health") return Response.json({ ok: true });
+  // An observed call (OpenAI over WebRTC, step 12): made from the offer, then its side channel and its hang-up.
+  if (request.method === "POST" && url.pathname.endsWith("/v1/realtime/calls")) return observedCall(request);
+  if (request.method === "POST" && /\/v1\/realtime\/calls\/[^/]+\/hangup$/u.test(url.pathname)) return new Response(null, { status: 200 });
+  if (url.pathname.endsWith("/v1/realtime") && url.searchParams.has("call_id") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return observedSide(url.searchParams.get("call_id") ?? "");
   if (url.pathname.endsWith("/v1/realtime") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return realtimeSession();
   if (url.pathname.endsWith("BidiGenerateContent") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return geminiLiveSession();
   if (url.pathname.endsWith("/v1/live/sessions") && request.headers.get("upgrade")?.toLowerCase() === "websocket") return gptLiveSession();
@@ -930,6 +934,55 @@ function elevenLabsStream(): Response {
     } else if (typeof text === "string" && text.trim() !== "") {
       server.send(JSON.stringify({ audio: "AAAA", isFinal: null, normalizedAlignment: null }));
     }
+  });
+  return new Response(null, { status: 101, webSocket: client });
+}
+
+/** How long a mock observed call runs: its side channel then closes, and attaching again gets OpenAI's 404. */
+const OBSERVED_CALL_MS = 4_000;
+
+/** An observed call made from OpenAI's form: its id says when it was made, so the mock keeps no state. */
+async function observedCall(request: Request): Promise<Response> {
+  const form = await request.formData().catch(() => null);
+  const sdp = form?.get("sdp");
+  if (typeof sdp !== "string" || !sdp.startsWith("v=")) return Response.json({ error: { message: "The offer is not SDP" } }, { status: 400 });
+  const id = `rtc_smoke_${Date.now()}_${crypto.randomUUID().slice(0, 8)}`;
+  return new Response("v=0\r\no=mock 1 1 IN IP4 0.0.0.0\r\ns=mock answer\r\nt=0 0\r\n", { status: 201, headers: { location: `/v1/realtime/calls/${id}`, "content-type": "application/sdp" } });
+}
+
+/**
+ * An observed call's side channel: it answers each `session.update` with one `session.updated`, as OpenAI
+ * answers the relay's keepalive, reports one answer (80 input and 10 output tokens) a second after it
+ * attached, and closes when the call ends. A call that ended gets 404, as OpenAI's does.
+ */
+function observedSide(callId: string): Response {
+  const made = Number(/^rtc_smoke_(\d+)_[0-9a-f]{8}$/u.exec(callId)?.[1] ?? 0);
+  const left = made + OBSERVED_CALL_MS - Date.now();
+  if (made === 0 || left <= 0) return Response.json({ error: { code: "call_id_not_found" } }, { status: 404 });
+  const [client, server] = Object.values(new WebSocketPair());
+  if (client === undefined || server === undefined) throw new Error("no WebSocket pair");
+  server.accept();
+  server.addEventListener("message", (event) => {
+    if (typeof event.data === "string" && event.data.includes('"session.update"')) server.send(JSON.stringify({ type: "session.updated", event_id: "event_mock", session: { type: "realtime" } }));
+  });
+  const answer = setTimeout(() => {
+    try {
+      server.send(JSON.stringify({ type: "response.created", response: { id: `${callId}-1` } }));
+      server.send(JSON.stringify({ type: "response.done", event_id: "event_done", response: { id: `${callId}-1`, usage: { input_tokens: 80, output_tokens: 10 } } }));
+    } catch {
+      // Closed already.
+    }
+  }, Math.min(1_000, left / 2));
+  const end = setTimeout(() => {
+    try {
+      server.close(1011, "call ended");
+    } catch {
+      // Closed already.
+    }
+  }, left);
+  server.addEventListener("close", () => {
+    clearTimeout(answer);
+    clearTimeout(end);
   });
   return new Response(null, { status: 101, webSocket: client });
 }

@@ -4,7 +4,9 @@
  * Text through Chat Completions and Responses, and transcription, images,
  * embeddings and speech (step 3), and the realtime
  * WebSocket, one of the hardest shapes: a relayed session with its model in
- * the query, measured from the provider's usage events (step 9).
+ * the query, measured from the provider's usage events (step 9). Over WebRTC
+ * the same session is observed: the relay creates the call and reads the
+ * same events from its side channel (step 12).
  */
 import { chat, embeddings, images, responses, speech, transcription, withV1Paths } from "./llm.ts";
 import { defineOperation, defineProvider, LIVE_TOKEN_WINDOW_SECONDS, liveTokenExpiry } from "./operation.ts";
@@ -91,6 +93,19 @@ export const openai = defineProvider({
       modelKinds: ["realtime"],
       meter: { kind: "provider_event", adapter: "openai-realtime", tokensOnly: true },
       session: { slot: "conversational", mode: "relayed" },
+    }),
+    // The same Realtime session over WebRTC, observed (step 12): the relay creates the call from the app's
+    // offer, with the session's model, and reads usage from the call's side channel. Media goes between the
+    // device and OpenAI. Never served as a plain call: an app asks for a session, as for any live session.
+    defineOperation({
+      name: "openai.realtime.calls",
+      match: { method: "POST", path: "v1/realtime/calls" },
+      lifecycle: "session",
+      transport: "webrtc",
+      model: { in: "body", field: "model" },
+      modelKinds: ["realtime"],
+      meter: { kind: "provider_event", adapter: "openai-realtime", tokensOnly: true },
+      session: { slot: "conversational", mode: "observed" },
     }),
     // GPT-Live (9g): billed by the minute, by OpenAI's own voice seconds and the relay's clock
     // (`relay/src/adapters.js`), plus each backend model call at its own model's price. The model is in

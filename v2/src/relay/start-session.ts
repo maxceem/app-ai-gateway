@@ -36,8 +36,11 @@ export const SESSION_CAP_MS = 30 * 60_000;
 /** The relay's path for a session (`relay/src/constants.js`). */
 const RELAY_SESSION_PATH = "/v2/relay/session";
 
-/** The relay's address for a session, from `RELAY_URL`, or null when the deployment has none. */
-export function relaySessionUrl(env: Env): string | null {
+/**
+ * The relay's address for a session, from `RELAY_URL`, or null when the deployment has none: a WebSocket
+ * address for a relayed session, and the `https` one an observed session's offer is posted to.
+ */
+export function relaySessionUrl(env: Env, mode: "relayed" | "observed" = "relayed"): string | null {
   const base = (env as unknown as { RELAY_URL?: unknown }).RELAY_URL;
   if (typeof base !== "string" || base === "") return null;
   let url: URL;
@@ -47,7 +50,7 @@ export function relaySessionUrl(env: Env): string | null {
     return null;
   }
   if (url.protocol !== "https:" && url.protocol !== "http:") return null;
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  if (mode === "relayed") url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.pathname = RELAY_SESSION_PATH;
   url.search = "";
   url.hash = "";
@@ -141,7 +144,15 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
       // that allows passthrough, and served by the generic adapter (plan D4, D10).
       const [path = "", search] = splitQuery(request.data.path);
       const websocket = routing.operations.includes(PASSTHROUGH) ? compiledWebsocket(connection.passthrough ?? []) : [];
-      const match = matcherFor(description).match("GET", path, { route: upstreamRoute(description, connection), passthrough: websocket });
+      const matcher = matcherFor(description);
+      const route = upstreamRoute(description, connection);
+      let match = matcher.match("GET", path, { route, passthrough: websocket });
+      // An observed session (WebRTC) is created at the provider with a POST (OpenAI's `v1/realtime/calls`): its
+      // path is matched as a POST, and only to a declared observed operation, never to a listed path.
+      if (match.kind !== "operation" && match.kind !== "passthrough") {
+        const posted = matcher.match("POST", path, { route });
+        if (posted.kind === "operation" && posted.operation.session?.mode === "observed") match = posted;
+      }
       const operation = match.kind === "operation" ? match.operation : match.kind === "passthrough" ? WEBSOCKET_OPERATION : null;
       if (operation === null || match.kind === "refused" || operation.lifecycle !== "session" || operation.session === undefined) {
         throw new GatewayError(403, "path_not_allowed", "Provider path is not a live session");
@@ -153,8 +164,6 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
       if (match.kind === "operation" && !routing.operations.includes(operation.name)) {
         throw new GatewayError(403, "path_not_allowed", `This app does not allow ${operation.name}`);
       }
-      // Observed mode (WebRTC) comes with step 9a part 3.
-      if (operation.session.mode !== "relayed") throw new GatewayError(403, "path_not_allowed", `${operation.name} is not served yet`);
       // The relay dials the provider's own address; a session through Cloudflare AI Gateway is not served yet.
       if (connection.cloudflareGateway !== null) {
         throw new GatewayError(502, "provider_unavailable", "Live sessions cannot go through Cloudflare AI Gateway yet");
@@ -185,7 +194,7 @@ export async function startSessionHandler(c: ProxyContext): Promise<Response> {
       const backendSpec = operation.session.backend;
       const backendOperation = backendSpec === undefined ? undefined : description.operations.find((one) => one.name === backendSpec.operation);
       const backend = backendOperation === undefined ? undefined : backendModels(routing, priceSources(connection), backendOperation);
-      const relayUrl = relaySessionUrl(c.env);
+      const relayUrl = relaySessionUrl(c.env, operation.session.mode);
       if (relayUrl === null) {
         log("error", "relay_url_missing", {});
         throw new GatewayError(503, "service_unavailable", "Live sessions are not set up on this deployment");

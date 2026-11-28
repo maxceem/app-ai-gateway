@@ -812,3 +812,42 @@ describe("saving a listed path", () => {
     expect(handoff).toMatchObject({ status: 400, body: { error: { code: "invalid_request" } } });
   });
 });
+
+describe("a listing for OpenAI's observed calls path, POST v1/realtime/calls (step 12)", () => {
+  const CALLS = { method: "POST", path: "v1/realtime/calls" } as const;
+  const form = () => {
+    const body = new FormData();
+    body.set("sdp", "v=0\r\n");
+    body.set("session", JSON.stringify({ type: "realtime", model: "gpt-realtime" }));
+    return body;
+  };
+
+  it("keeps a listing saved before the operation was built in: it is served as listed, and a save that keeps it succeeds", async () => {
+    const { appId, slug, key } = await setup([CALLS]);
+    fetchSpy.mockResolvedValue(new Response("v=0 answer", { status: 201, headers: { location: "/v1/realtime/calls/rtc_1" } }));
+    const { response } = await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/realtime/calls`, key, { body: form() });
+    expect(response.status).toBe(201);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(String(fetchSpy.mock.calls[0]![0])).toBe("https://api.openai.com/v1/realtime/calls");
+    const management = await seedManagementKey();
+    const id = (await env.DB.prepare("SELECT id FROM provider_connection WHERE slug = ?").bind(slug).first<{ id: string }>())!.id;
+    const kept = await admin(management, "PUT", `/v2/admin/providers/${id}`, { revision: 1, passthrough: [CALLS, { method: "GET", path: "v1/files" }] });
+    expect(kept.status).toBe(200);
+    expect(kept.body.provider.passthrough).toEqual([CALLS, { method: "GET", path: "v1/files" }]);
+  });
+
+  it("refuses a new listing for it at save: the app turns the operation on instead", async () => {
+    const management = await seedManagementKey();
+    const refused = await admin(management, "POST", "/v2/admin/providers", { type: "openai", name: "OpenAI", slug: `openai-${crypto.randomUUID().slice(0, 6)}`, secret: "sk-live-secret-abcd", passthrough: [CALLS] });
+    expect(refused.status).toBe(400);
+    expect(JSON.stringify(refused.body)).toContain("is built in as the openai.realtime.calls operation; turn it on for the app instead");
+  });
+
+  it("never serves the operation as a plain call: an app with it on asks for a session", async () => {
+    const { appId, slug, key } = await setup([], ["openai.realtime.calls"]);
+    const { response, text } = await send("POST", `/v2/apps/${appId}/proxy/${slug}/v1/realtime/calls`, key, { body: form() });
+    expect(response.status).toBe(403);
+    expect(JSON.parse(text)).toMatchObject({ error: { code: "path_not_allowed" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});

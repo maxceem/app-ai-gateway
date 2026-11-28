@@ -120,17 +120,32 @@ export function observedUrls(target, callId) {
 }
 
 /**
+ * The form an observed call is created with, as OpenAI takes it at `…/realtime/calls`: the app's
+ * `sdp`, and its `session` with the session's own model (the model lock) and `type: "realtime"`.
+ * Everything else in the app's session goes as it is.
+ * @param {import("./start.js").Offer} offer
+ * @param {string | null} model the session's locked model
+ */
+export function callForm(offer, model) {
+  const form = new FormData();
+  form.set("sdp", offer.sdp);
+  form.set("session", JSON.stringify({ ...offer.session, type: "realtime", ...(model === null ? {} : { model }) }));
+  return form;
+}
+
+/**
  * Creates an observed call from the app's offer (plan 4.3 step 4): the
  * provider answers with its own answer and the call's id (`Location`). A
  * refusal with an answer is known; a throw or a timeout is an unknown
  * outcome, never retried (`./start.js`).
  * @param {import("./start.js").SessionKey} key
- * @param {string} offer
+ * @param {import("./start.js").Offer} offer
+ * @param {string | null} model the session's locked model
  * @param {typeof fetch} [send]
  * @param {(ms: number) => Promise<unknown>} [timeout]
  * @returns {Promise<{ callId: string, answer: string }>}
  */
-export async function createObservedCall(key, offer, send = fetch, timeout = wait) {
+export async function createObservedCall(key, offer, model, send = fetch, timeout = wait) {
   const handshake = new AbortController();
   let answered = false;
   void timeout(PROVIDER_CONNECT_TIMEOUT_MS).then(() => {
@@ -138,7 +153,7 @@ export async function createObservedCall(key, offer, send = fetch, timeout = wai
   });
   // The limit covers the answer's body too: a provider that stalls in it never leaves the app's POST waiting.
   try {
-    const response = await send(key.target, { method: "POST", headers: keyHeaders(key, { "content-type": "application/sdp" }), body: offer, redirect: "manual", signal: handshake.signal });
+    const response = await send(key.target, { method: "POST", headers: keyHeaders(key), body: callForm(offer, model), redirect: "manual", signal: handshake.signal });
     const location = response.headers.get("location") ?? "";
     const callId = decodeURIComponent(location.split("/").filter((part) => part !== "").pop() ?? "");
     if ((response.status !== 200 && response.status !== 201) || !/^[A-Za-z0-9_.-]{1,200}$/u.test(callId)) {

@@ -21,7 +21,7 @@ type Reply = { decision: "continue" | "stop"; reasons: string[]; written: boolea
 /** What an attach answers: 101 attaches, any other status is a refusal; "throw" fails with no answer. */
 type AttachAnswer = 101 | 404 | 503 | "throw";
 
-const OFFER = "v=0\r\na=x-test:offer\r\n";
+const OFFER = { sdp: "v=0\r\na=x-test:offer\r\n", session: {} };
 
 function setup(
   options: {

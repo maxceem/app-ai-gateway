@@ -18,7 +18,7 @@ import { ACCOUNT_ID } from "./helpers.ts";
 const relay = () => (env as unknown as { RELAY_TEST: Fetcher }).RELAY_TEST;
 const provider = () => (env as unknown as { PROVIDER_STUB: Fetcher }).PROVIDER_STUB;
 /** What the stand-in for the gateway's contract got from the relay for one session. */
-type Seen = { checkpoints: { slice: { measures: Record<string, number> } | null; connected: boolean }[]; closes: { endReason: string; providerCallId: string | null }[] };
+type Seen = { checkpoints: { slice: { measures: Record<string, number>; gaps?: number } | null; connected: boolean; accounting?: boolean }[]; closes: { endReason: string; providerCallId: string | null }[] };
 const seenFor = async (sessionId: string) => (await (await (env as unknown as { RELAY_MAIN_STUB: Fetcher }).RELAY_MAIN_STUB.fetch(`https://main.test/seen/${sessionId}`)).json()) as Seen;
 
 async function ticketFor(connection: string): Promise<string> {
@@ -319,6 +319,8 @@ describe(`an observed session through the relay's session object (step 9a part 3
     expect(await (await provider().fetch("https://provider.test/hangups")).json()).toContain(callId);
     // Each answer is 100 input tokens, booked once: two or three of them came before the cap.
     expect([200, 300]).toContain(inputTokens(seen));
+    // Each answer was closed by its own response.done, so the cap cut none: the final slice has no gap.
+    expect(seen.checkpoints.filter((checkpoint) => checkpoint.accounting === true).at(-1)?.slice).toMatchObject({ gaps: 0 });
     // The key went to the provider from the vault's seal.
     expect(await (await provider().fetch("https://provider.test/last-key-header")).json()).toEqual({ authorization: "Bearer sk-session-object" });
   });
@@ -331,6 +333,47 @@ describe(`an observed session through the relay's session object (step 9a part 3
     const refused = first.status === 409 ? first : second;
     expect(["start_in_flight", "session_active"]).toContain(((await refused.json()) as { error: { code: string } }).error.code);
     expect(await (await provider().fetch(`https://provider.test/calls/${tag}`)).json()).toEqual({ made: 1 });
+  });
+
+  it("takes OpenAI's form from the app and creates the call with the session's model, then sends the side channel its keepalive (step 12)", async () => {
+    const { ticket, sessionId } = await issued("conn_observed_form", Date.now(), undefined, { capMs: 1_500 });
+    const tag = crypto.randomUUID();
+    const form = new FormData();
+    form.set("sdp", "v=0\r\na=x-mock-turns:0.4\r\n");
+    form.set("session", JSON.stringify({ type: "realtime", model: "gpt-realtime-2.1", instructions: tag }));
+    const response = await relay().fetch(`https://relay.test${SESSION_PATH}`, { method: "POST", headers: { authorization: `Bearer ${ticket}` }, body: form });
+    expect(response.status).toBe(201);
+    const sessions = (await (await provider().fetch("https://provider.test/sessions")).json()) as { instructions?: string }[];
+    // The model is the session's own; the rest of the app's settings went as they were.
+    expect(sessions.find((session) => session?.instructions === tag)).toEqual({ type: "realtime", model: "gpt-realtime", instructions: tag });
+    const seen = await closed(sessionId);
+    expect(seen.closes).toEqual([expect.objectContaining({ endReason: "time_cap" })]);
+    expect([200, 300]).toContain(inputTokens(seen));
+    expect(await (await provider().fetch("https://provider.test/side-messages")).json()).toContain('{"type":"session.update","session":{"type":"realtime"}}');
+  });
+
+  it("refuses a form with no SDP, or a session that is not a JSON object, before anything starts", async () => {
+    const { ticket } = await issued("conn_observed_bad_form", Date.now(), undefined, { capMs: 60_000 });
+    const send = (fields: Record<string, string>) => {
+      const form = new FormData();
+      for (const [name, value] of Object.entries(fields)) form.set(name, value);
+      return relay().fetch(`https://relay.test${SESSION_PATH}`, { method: "POST", headers: { authorization: `Bearer ${ticket}` }, body: form });
+    };
+    for (const fields of [{ session: "{}" }, { sdp: "v=0\r\n", session: "[1]" }, { sdp: "v=0\r\n", session: "{" }] as Record<string, string>[]) {
+      const refused = await send(fields);
+      expect(refused.status).toBe(400);
+      expect(await refused.json()).toEqual({ error: { code: "offer_invalid" } });
+    }
+    // A form whose type names no boundary is still a form: refused, never read as SDP (Sol, #277 round 1).
+    const unbounded = await relay().fetch(`https://relay.test${SESSION_PATH}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${ticket}`, "content-type": "multipart/form-data" },
+      body: "v=0\r\n",
+    });
+    expect(unbounded.status).toBe(400);
+    expect(await unbounded.json()).toEqual({ error: { code: "offer_invalid" } });
+    // Nothing started: the same ticket still makes the call.
+    expect((await send({ sdp: "v=0\r\na=x-mock-ends:0.5\r\n" })).status).toBe(201);
   });
 
   it("refuses an offer that is too large, and a second one after the session started", async () => {

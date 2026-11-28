@@ -86,6 +86,15 @@ export const CLOSE_DRAIN_MS = 10_000;
 /** A side channel that closes sooner than this after it attached is attached again on the next tick, not at once. */
 export const SIDE_CHANNEL_MIN_LIFE_MS = 5_000;
 
+/** How often an observed call's side channel gets its keepalive (plan section 5; T9, T21, T22). Checked on each tick. */
+export const SIDE_KEEPALIVE_MS = 60_000;
+
+/**
+ * The idle rule (plan section 5; T18): a live call's side channel is never quiet, since the provider answers
+ * the keepalive every minute. One that brought nothing for this long is let go and attached again.
+ */
+export const SIDE_IDLE_MS = 3 * 60_000;
+
 /**
  * How long a restarted instance waits for the vault's key, for a reattach or a hang-up: past it the
  * call stays detached, or the hang-up owed, and the next wakeup tries again. Short, so a stalled
@@ -133,22 +142,28 @@ const CLIENT_END_CODES = { client_too_slow: 4000, heartbeat_timeout: 4000 };
  *   checkpoint(ticket: string, input: CheckpointCall): Promise<CheckpointReply>,
  *   close(ticket: string, input: { finalSlice: number, endReason: string, endedAt: number, providerCallId: string | null, relayVersion: number }): Promise<unknown>,
  * }} MainPort
- * @typedef {{ callId: string | null, close?: (code: number, reason: string) => void, estimate?: () => import("./journal.js").UsageEvent | null }} ProviderCall
+ * @typedef {{ callId: string | null, close?: (code: number, reason: string) => void, estimate?: () => import("./journal.js").UsageEvent | null, keepalive?: () => void }} ProviderCall
  * `close` hangs up the provider's side of a relayed session, or closes an observed call's side channel.
+ * `keepalive`, an observed call's side channel that needs traffic (OpenAI's, plan section 5): sends one
+ * message that changes nothing. A side channel with one is held to the idle rule (`sideChecks`).
  * `estimate`, for a provider whose cut answer never reports usage (Gemini Live, OpenAI Realtime): what the session's
  * own end bills for the answer it cuts, asked once before the final slice.
  * @typedef {{
  *   connect(key: SessionKey, settings: Settings): Promise<ProviderCall>,
- *   createCall?(key: SessionKey, offer: string): Promise<{ callId: string, answer: string }>,
- *   attach?(key: SessionKey, callId: string, adapter: string | undefined, limitMs: number): Promise<ProviderCall>,
+ *   createCall?(key: SessionKey, offer: Offer, model: string | null): Promise<{ callId: string, answer: string }>,
+ *   attach?(key: SessionKey, callId: string, settings: Settings, limitMs: number): Promise<ProviderCall>,
  *   hangup?(key: SessionKey, callId: string): Promise<void>,
  * }} ProviderPort
- * `connect` (relayed) gets the session's settings, for its adapter and its locked model. It and
- * `createCall` (observed) throw `ProviderRefused` for a known refusal;
+ * `connect` (relayed) gets the session's settings, for its adapter and its locked model; `createCall`
+ * (observed) gets the locked model, and `attach` the settings. `connect` and `createCall` throw
+ * `ProviderRefused` for a known refusal;
  * anything else is an unknown outcome. `attach` attaches an observed call's side channel, and
  * throws `ProviderRefused` with the status when it is refused (404: the call ended); it waits
  * at most `limitMs`, the time left before the deadline, and throws past it. `hangup`
  * ends an observed call: closing its side channel doesn't (plan, T1).
+ * @typedef {{ sdp: string, session: Record<string, unknown> }} Offer
+ * An observed session's offer, as the app sent it (`../index.js`): its SDP, and its session settings
+ * (empty when it sent only the SDP).
  * @typedef {(event: Record<string, unknown>) => void} Logger
  * @typedef {{ close(code: number, reason: string): void }} Client the connection a session is started for
  * @typedef {(now: number) => string | null} Liveness the live session's own checks on each tick: an end reason, or null
@@ -281,6 +296,10 @@ export class SessionCore {
      * succeeds books no time from before it, as no side channel existed yet (`attachOnce`).
      */
     this.firstAttach = false;
+    /** When the observed call's side channel last brought a frame, or attached (`heard`, the idle rule). */
+    this.heardAt = 0;
+    /** When the side channel last got its keepalive. */
+    this.keptAliveAt = 0;
     /**
      * Set once an end has stored `ended`, and never cleared: an observed call's attach or journal
      * write that finishes after the end (when `ending` is null again) changes nothing.
@@ -329,6 +348,35 @@ export class SessionCore {
     if (this.call === null || this.ending !== null) return false;
     this.owner = client;
     return true;
+  }
+
+  /** The observed call's side channel brought a frame: it is alive (the idle rule, `sideChecks`). */
+  heard() {
+    this.heardAt = this.now();
+  }
+
+  /**
+   * An observed call's side channel on a tick (plan section 5): one that brought nothing for `SIDE_IDLE_MS`
+   * is let go, so the tick attaches it again. The time since it last brought anything, from the slice not
+   * yet sent, is a gap: it may have missed usage, so that slice is partial. Otherwise it gets its keepalive when one is due. Only a side channel with a
+   * keepalive is held to the idle rule: without one, a quiet side channel says nothing.
+   * @param {number} now
+   */
+  async sideChecks(now) {
+    const call = this.call;
+    if (call === null || call.keepalive === undefined) return;
+    if (now - this.heardAt >= SIDE_IDLE_MS) {
+      this.log({ level: "warn", message: "relay_side_channel_idle", session: this.sessionId });
+      // Let go first: its close event then changes nothing (`sideGone`).
+      this.call = null;
+      call.close?.(1000, "idle");
+      await this.noteDetached(this.heardAt);
+      return;
+    }
+    if (now - this.keptAliveAt >= SIDE_KEEPALIVE_MS) {
+      this.keptAliveAt = now;
+      call.keepalive();
+    }
   }
 
   /** The provider finished an answer: a closing wait for it ends now. */
@@ -384,7 +432,7 @@ export class SessionCore {
    * @param {string} ticketText
    * @param {import("./ticket.js").Ticket} ticket
    * @param {Client} [client]
-   * @param {string} [offer] an observed session's offer
+   * @param {Offer} [offer] an observed session's offer
    * @returns {Promise<{ ok: true, reconnectSecret: string | null, call: ProviderCall | null, answer: string | null, deadline: number, adapter: string | undefined } | { ok: false, code: string }>}
    */
   async start(ticketText, ticket, client, offer) {
@@ -500,7 +548,7 @@ export class SessionCore {
           // No socket to keep: if the start stops after this, the app never gets the answer, and the
           // provider ends the call by itself (crash table row 11).
           if (this.provider.createCall === undefined) throw new ProviderRefused(501);
-          created = await this.provider.createCall(key, offer ?? "");
+          created = await this.provider.createCall(key, offer ?? { sdp: "", session: {} }, settings.model ?? null);
         } else {
           // Kept at once, so whatever happens next can hang it up.
           ownCall = await this.provider.connect(key, settings);
@@ -665,11 +713,11 @@ export class SessionCore {
     if (this.now() - this.attachedAt >= SIDE_CHANNEL_MIN_LIFE_MS) await this.attachSide();
   }
 
-  /** The side channel is down from now: the time is a gap until it is back (`markDetached`). */
-  async noteDetached() {
+  /** The side channel is down from `at` (now by default): the time is a gap until it is back (`markDetached`). */
+  async noteDetached(at = this.now()) {
     const journal = await this.loadJournal();
     if (journal === null || journal.detachedFrom !== undefined) return;
-    markDetached(journal, this.now());
+    markDetached(journal, at);
     await this.writeJournal(journal);
   }
 
@@ -748,7 +796,7 @@ export class SessionCore {
     let call;
     try {
       // Never waits past the deadline: a slow attach can't keep the call past its cap.
-      call = await this.provider.attach(key, callId, settings.adapter, Math.max(0, settings.deadline - this.now()));
+      call = await this.provider.attach(key, callId, settings, Math.max(0, settings.deadline - this.now()));
     } catch (error) {
       if (error instanceof ProviderRefused && error.status === 404) return this.end("provider_closed");
       this.log({ level: "warn", message: "relay_side_channel_unavailable", session: this.sessionId, ...(error instanceof ProviderRefused ? { status: error.status } : {}) });
@@ -763,6 +811,11 @@ export class SessionCore {
     this.call = call;
     this.held = true;
     this.attachedAt = this.now();
+    // A keepalive at once: the provider's answer to it states the session (its transcription model), which a
+    // side channel attached after the call began never got, and starts the idle rule's clock (`sideChecks`).
+    this.heardAt = this.attachedAt;
+    this.keptAliveAt = this.attachedAt;
+    call.keepalive?.();
     const journal = await this.loadJournal();
     if (journal !== null) {
       const now = this.now();
@@ -1290,6 +1343,8 @@ export class SessionCore {
       // its journal's last write is a gap (rows 13 and 14, relayed). An observed session reattaches
       // instead (part 3): until then it waits for its deadline.
       if (lost) return this.end("error", { log: "relay_provider_lost", gap: true });
+      // The side channel's keepalive, or the idle rule letting it go, which the attach below then follows.
+      if (settings?.mode === "observed") await this.sideChecks(now);
       // An observed call whose side channel is down (a close, a 503, a restarted instance): one
       // attach per tick. The tick's checkpoint runs whatever it found, so an explicit stop still
       // reaches a detached call (row 23); a 404 has ended the session, and the checkpoint is skipped.

@@ -386,19 +386,41 @@ hash it stored. Then:
 
 An observed session has no client socket (plan section 5). Media goes between
 the app and the provider directly; the relay holds only the call's side
-channel. Only the mock is served for now: the gateway issues observed tickets
-from plan step 12, which also adds what is specific to OpenAI.
+channel. OpenAI Realtime over WebRTC is the one observed session (plan step
+12): the app asks the gateway for a session with the path `v1/realtime/calls`
+(operation `openai.realtime.calls`), and the answer's `relay_url` is an
+`https` address.
 
 - **Starting:** the app sends its offer to the session path in a `POST`, with
-  the ticket in `authorization` and the offer as the body (at most 64 KB). A
-  WebSocket with an observed ticket gets `400 offer_required`. The relay
-  creates the call, stores its id, and only then answers `201` with the
+  the ticket in `authorization` (at most 64 KB). The body is either form
+  OpenAI takes at `v1/realtime/calls`: the SDP alone (`application/sdp`), or
+  `multipart/form-data` with `sdp` and, optionally, `session`, a JSON object
+  with the session's settings. The relay reads the session whole, sets its
+  `model` to the session's and its `type` to `realtime`, and sends the rest
+  as it is. A WebSocket with an observed ticket gets `400 offer_required`. The
+  relay creates the call, stores its id, and only then answers `201` with the
   provider's answer (`application/sdp`).
 - **Refusals** are JSON, `{"error":{"code":…}}`, with the start's code:
-  `401 ticket_refused` or `ticket_expired`; `409 session_active`,
+  `400 offer_invalid` (a form with no `sdp`, or a `session` that is not a JSON
+  object); `401 ticket_refused` or `ticket_expired`; `409 session_active`,
   `start_in_flight` or `session_ended`; `413 offer_too_large`;
   `502 provider_unavailable`; `503` for anything else, such as
   `credential_unavailable` or `open_failed`.
+- **The keepalive:** OpenAI closes a side channel that sends nothing for 5
+  minutes. So the relay sends `{"type":"session.update","session":{"type":"realtime"}}`
+  on it when it attaches, then about once a minute. It changes no setting and
+  creates no answer. OpenAI answers it on every connection of the call, so the
+  app gets one unchanged `session.updated` about once a minute. Its `event_id`
+  is OpenAI's own, so the app can't tell it apart by id, and it can arrive
+  while the app's own `session.update` waits for its answer. So a client
+  should not match `session.updated` to its own updates by count or by id.
+  Compare each one with the last `session.updated` (not with
+  `session.created`: OpenAI sends its own `session.updated` right after the
+  start): an unchanged one says nothing new and can be ignored.
+- **The idle rule:** a side channel that brings nothing for 3 minutes, though
+  the keepalive went every minute, is let go and attached again on the same
+  tick, by the rules below. The time since it last brought anything, in the
+  part of the session not yet booked, is not counted as connection time.
 - **The side channel:** the relay attaches it after the answer, and again at
   once whenever it closes after at least 5 s (sooner, on its next 30 s tick),
   with that tick as the backup, also after the relay restarts. An attach that gets `404` means the call ended, and the

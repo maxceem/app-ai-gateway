@@ -201,7 +201,7 @@ describe("the provider connection's time limit (T12, first run)", () => {
       return new Response(body, { status: 201, headers: { location: "/v1/realtime/calls/rtc_1" } });
     }) as typeof fetch;
     let elapse: () => void = () => undefined;
-    const pending = createObservedCall({ ...key, target: "https://provider.test/v1/realtime/calls" }, "v=0", send, () => new Promise<void>((resolve) => (elapse = resolve)));
+    const pending = createObservedCall({ ...key, target: "https://provider.test/v1/realtime/calls" }, { sdp: "v=0", session: {} }, "gpt-realtime", send, () => new Promise<void>((resolve) => (elapse = resolve)));
     // The limit passes once the headers are in, while the body is still being read.
     for (let step = 0; step < 10; step += 1) await Promise.resolve();
     elapse();
